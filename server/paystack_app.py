@@ -139,7 +139,7 @@ async def pay(user_id: int):
     url = "https://api.paystack.co/transaction/initialize"
 
     payload = {
-        "email": f"user{user_id}@telegram.local",
+        "email": f"user{user_id}@derivalertbot.xyz",
         "amount": 500000,
         "callback_url": f"{PAYMENT_BASE_URL}/pay/callback",
         "metadata": {
