@@ -3,21 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Callable, Awaitable, Any
+from typing import Callable, Awaitable
 
 import websockets
 from websockets.client import WebSocketClientProtocol
-
 
 TickHandler = Callable[[str, float], Awaitable[None]]
 
 
 class DerivTickStream:
-    """
-    Dedicated streaming client for tick subscriptions.
-    Separate from request/response client for clarity.
-    """
-
     def __init__(self, base_url: str, app_id: int):
         self._base_url = base_url.rstrip("/")
         self._app_id = int(app_id)
@@ -46,8 +40,7 @@ class DerivTickStream:
             return
         if symbol in self._subscriptions:
             return
-        payload = {"ticks": symbol, "subscribe": 1}
-        await self._ws.send(json.dumps(payload))
+        await self._ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
         self._subscriptions.add(symbol)
         self._log.info("Subscribed to %s", symbol)
 
@@ -69,20 +62,18 @@ class DerivTickStream:
 
                 async for msg in self._ws:
                     data = json.loads(msg)
-
                     if data.get("msg_type") == "tick":
                         tick = data.get("tick") or {}
                         symbol = tick.get("symbol")
                         quote = tick.get("quote")
                         if symbol and quote is not None and self._tick_handler:
-                            await self._tick_handler(symbol, float(quote))
+                            await self._tick_handler(str(symbol), float(quote))
 
             except Exception as e:
                 self._log.warning("Stream error: %s. Reconnecting...", e)
                 await asyncio.sleep(3)
                 try:
                     await self.connect()
-                    
                     for s in list(self._subscriptions):
                         await self.subscribe(s)
                 except Exception as e2:

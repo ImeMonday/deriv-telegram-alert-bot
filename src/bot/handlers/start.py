@@ -11,8 +11,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Deriv Alert Bot is running.\n\n"
         "Commands:\n"
         "/setalert - create a new price alert\n"
-        "/viewalerts - view saved alerts (Step 5)\n"
-        "/deletealert - delete alerts (Step 5)\n"
+        "/viewalerts - view your alerts\n"
+        "/myalerts - view your alerts\n"
+        "/deletealert - deactivate alerts\n"
         "/cancel - cancel current action\n\n"
         f"Hi {name}."
     )

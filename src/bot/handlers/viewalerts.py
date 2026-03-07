@@ -10,9 +10,7 @@ from bot.db.repo import Repo
 
 def _fmt_alert(a) -> str:
     status = "ACTIVE" if a.is_active else "OFF"
-    direction = str(a.direction).upper()
-    mode = str(a.mode)
-    return f"#{a.id} [{status}] {a.symbol} {direction} {a.price} ({mode})"
+    return f"#{a.id} [{status}] {a.symbol} {a.direction.upper()} {a.price} ({a.mode})"
 
 
 async def viewalerts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -33,11 +31,8 @@ async def viewalerts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     lines = ["Your alerts:"]
-
     for a in alerts[:50]:
         lines.append(_fmt_alert(a))
-
     if len(alerts) > 50:
         lines.append(f"...and {len(alerts) - 50} more.")
-
     await update.message.reply_text("\n".join(lines))

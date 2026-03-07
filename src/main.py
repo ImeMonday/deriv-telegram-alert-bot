@@ -14,7 +14,6 @@ async def main() -> None:
     log = logging.getLogger("bot")
 
     _app = build_app(settings)
-
     log.info("Bot code loaded (Telegram calls disabled until Step 9).")
 
 

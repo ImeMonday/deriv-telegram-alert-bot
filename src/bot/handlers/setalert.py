@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -26,6 +25,7 @@ LOG = logging.getLogger("bot.setalert")
 
 KEY_GROUP = "sa_group"
 KEY_SYMBOL = "sa_symbol"
+KEY_SYMBOL_NAME = "sa_symbol_name"
 KEY_PRICE = "sa_price"
 KEY_DIRECTION = "sa_direction"
 KEY_MODE = "sa_mode"
@@ -38,8 +38,8 @@ def _group_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Forex Pairs", callback_data="grp:forex")],
-            [InlineKeyboardButton("Volatility Index", callback_data="grp:vol")],
-            [InlineKeyboardButton("✖ Cancel", callback_data="nav:cancel")],
+            [InlineKeyboardButton("Volatility Indices", callback_data="grp:vol")],
+            [InlineKeyboardButton("Cancel", callback_data="nav:cancel")],
         ]
     )
 
@@ -49,7 +49,7 @@ async def _edit_message(
     chat_id: int,
     message_id: int,
     text: str,
-    reply_markup: InlineKeyboardMarkup | None,
+    reply_markup,
 ) -> None:
     await context.bot.edit_message_text(
         chat_id=chat_id,
@@ -59,26 +59,19 @@ async def _edit_message(
     )
 
 
-def _build_symbol_page(
-    *,
-    all_symbols,
-    group: str,
-    query: str,
-    page: int,
-    page_size: int = 12,
-) -> tuple[str, InlineKeyboardMarkup, int, int]:
+def _build_symbol_page(*, all_symbols, group: str, query: str, page: int, page_size: int = 12):
     if group == "forex":
         items = SymbolCatalog.forex_pairs(all_symbols)
         title = "Forex Pairs"
     else:
         items = SymbolCatalog.volatility_indices(all_symbols)
-        title = "Volatility Index"
+        title = "Volatility Indices"
 
     filtered = SymbolCatalog.search(items, query)
     page_items, total_pages = SymbolCatalog.paginate(filtered, page, page_size=page_size)
 
-    rows: list[list[InlineKeyboardButton]] = []
-    row: list[InlineKeyboardButton] = []
+    rows = []
+    row = []
     for s in page_items:
         row.append(InlineKeyboardButton(s.display_name, callback_data=f"sym:{s.symbol}"))
         if len(row) == 2:
@@ -90,59 +83,75 @@ def _build_symbol_page(
     show_prev = page > 0
     show_next = page < (total_pages - 1)
     nav = nav_keyboard(show_prev=show_prev, show_next=show_next, show_refresh=True, show_back=True)
-    for nav_row in nav.inline_keyboard:
-        rows.append(nav_row)
+    for r in nav.inline_keyboard:
+        rows.append(r)
 
-    header = (
-        "Set Alert (Step B)\n"
-        f"Group: {title}\n"
+    text = (
+        f"{title}\n"
         f"Search: {query if query else '(type to search)'}\n"
         f"Page: {page + 1}/{total_pages}\n\n"
-        "Select a symbol:"
+        "Pick a symbol:"
     )
-    return header, InlineKeyboardMarkup(rows), page, total_pages
+    return text, InlineKeyboardMarkup(rows), page, total_pages
 
 
 async def setalert_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    for k in (KEY_GROUP, KEY_SYMBOL, KEY_PRICE, KEY_DIRECTION, KEY_MODE, KEY_LIST_MSG_ID):
-        context.user_data.pop(k, None)
-    context.user_data[KEY_PAGE] = 0
-    context.user_data[KEY_QUERY] = ""
+    if not update.message or not update.effective_user:
+        return ConversationHandler.END
 
-    # Enforce early (better UX)
     settings: Settings = context.application.bot_data["settings"]
     db = Database(DbConfig(path=settings.db_path))
     conn = await db.connect()
     try:
         repo = Repo(conn)
-        user_id = int(update.effective_user.id)
-        await repo.upsert_user(user_id)
-        plan = await repo.get_user_plan(user_id)
-        active_count = await repo.count_active_alerts(user_id)
+        uid = int(update.effective_user.id)
+        await repo.upsert_user(uid)
+        plan = await repo.get_user_plan(uid)
+        active_count = await repo.count_active_alerts(uid)
     finally:
         await conn.close()
 
     chk = can_create_alert(plan, active_count)
     if not chk.allowed:
-        if update.message:
-            await update.message.reply_text(chk.reason)
+        await update.message.reply_text(chk.reason)
         return ConversationHandler.END
 
-    await update.message.reply_text(
-        "Set Alert (Step A)\nChoose a market group:",
-        reply_markup=_group_keyboard(),
-    )
+    for k in (
+        KEY_GROUP,
+        KEY_SYMBOL,
+        KEY_SYMBOL_NAME,
+        KEY_PRICE,
+        KEY_DIRECTION,
+        KEY_MODE,
+        KEY_LIST_MSG_ID,
+    ):
+        context.user_data.pop(k, None)
+
+    context.user_data[KEY_PAGE] = 0
+    context.user_data[KEY_QUERY] = ""
+
+    await update.message.reply_text("Choose market group:", reply_markup=_group_keyboard())
     return int(SetAlertState.CHOOSE_GROUP)
+
+
+async def cancel_from_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+
+    await q.answer()
+    await q.edit_message_text("Cancelled.")
+    return ConversationHandler.END
 
 
 async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
-    await q.answer()
-
-    data = q.data or ""
-    if data == "nav:cancel":
-        await q.edit_message_text("Cancelled.")
+    if not q:
         return ConversationHandler.END
+
+    await q.answer()
+    data = q.data or ""
+    LOG.info("choose_group_cb callback_data=%s", data)
 
     if data == "grp:forex":
         context.user_data[KEY_GROUP] = "forex"
@@ -158,7 +167,7 @@ async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     cache: SymbolCache = context.application.bot_data["symbol_cache"]
     snap = await cache.get()
 
-    header, markup, page, _total_pages = _build_symbol_page(
+    text, markup, page, _ = _build_symbol_page(
         all_symbols=snap.all_symbols,
         group=str(context.user_data.get(KEY_GROUP)),
         query=str(context.user_data.get(KEY_QUERY, "")),
@@ -166,7 +175,7 @@ async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     context.user_data[KEY_PAGE] = page
 
-    await q.edit_message_text(header, reply_markup=markup)
+    await q.edit_message_text(text, reply_markup=markup)
 
     if q.message:
         context.user_data[KEY_LIST_MSG_ID] = q.message.message_id
@@ -176,6 +185,9 @@ async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+
     await q.answer()
     data = q.data or ""
 
@@ -184,7 +196,7 @@ async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     if data == "nav:back":
-        await q.edit_message_text("Set Alert (Step A)\nChoose a market group:", reply_markup=_group_keyboard())
+        await q.edit_message_text("Choose market group:", reply_markup=_group_keyboard())
         return int(SetAlertState.CHOOSE_GROUP)
 
     if data == "nav:refresh":
@@ -192,42 +204,52 @@ async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         snap = await cache.refresh()
         context.user_data[KEY_PAGE] = 0
 
-        header, markup, page, _total_pages = _build_symbol_page(
+        text, markup, page, _ = _build_symbol_page(
             all_symbols=snap.all_symbols,
             group=str(context.user_data.get(KEY_GROUP)),
             query=str(context.user_data.get(KEY_QUERY, "")),
             page=int(context.user_data.get(KEY_PAGE, 0)),
         )
         context.user_data[KEY_PAGE] = page
-        await q.edit_message_text(header, reply_markup=markup)
+        await q.edit_message_text(text, reply_markup=markup)
         return int(SetAlertState.CHOOSE_SYMBOL)
 
     if data == "nav:next":
         context.user_data[KEY_PAGE] = int(context.user_data.get(KEY_PAGE, 0)) + 1
     elif data == "nav:prev":
-        context.user_data[KEY_PAGE] = int(context.user_data.get(KEY_PAGE, 0)) - 1
+        context.user_data[KEY_PAGE] = max(0, int(context.user_data.get(KEY_PAGE, 0)) - 1)
 
     if data.startswith("nav:"):
         cache: SymbolCache = context.application.bot_data["symbol_cache"]
         snap = await cache.get()
 
-        header, markup, page, _total_pages = _build_symbol_page(
+        text, markup, page, _ = _build_symbol_page(
             all_symbols=snap.all_symbols,
             group=str(context.user_data.get(KEY_GROUP)),
             query=str(context.user_data.get(KEY_QUERY, "")),
             page=int(context.user_data.get(KEY_PAGE, 0)),
         )
         context.user_data[KEY_PAGE] = page
-        await q.edit_message_text(header, reply_markup=markup)
+        await q.edit_message_text(text, reply_markup=markup)
         return int(SetAlertState.CHOOSE_SYMBOL)
 
     if data.startswith("sym:"):
         symbol = data.split(":", 1)[1].strip()
         context.user_data[KEY_SYMBOL] = symbol
 
+        cache: SymbolCache = context.application.bot_data["symbol_cache"]
+        snap = await cache.get()
+
+        symbol_name = symbol
+        for s in snap.all_symbols:
+            if s.symbol == symbol:
+                symbol_name = s.display_name
+                break
+
+        context.user_data[KEY_SYMBOL_NAME] = symbol_name
+
         await q.edit_message_text(
-            "Set Alert (Step C)\n"
-            f"Selected: {symbol}\n\n"
+            f"Selected: {symbol_name}\n\n"
             "Send the price level as a number.\n"
             "Example: 1.2500 or 250.5\n\n"
             "Send /cancel to stop."
@@ -239,11 +261,11 @@ async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def symbol_search_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.message.text or "").strip()
-    if not text:
-        return int(SetAlertState.CHOOSE_SYMBOL)
+    if not update.message:
+        return ConversationHandler.END
 
-    context.user_data[KEY_QUERY] = text
+    text_in = (update.message.text or "").strip()
+    context.user_data[KEY_QUERY] = text_in
     context.user_data[KEY_PAGE] = 0
 
     msg_id = context.user_data.get(KEY_LIST_MSG_ID)
@@ -255,7 +277,7 @@ async def symbol_search_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     cache: SymbolCache = context.application.bot_data["symbol_cache"]
     snap = await cache.get()
 
-    header, markup, page, _total_pages = _build_symbol_page(
+    text, markup, page, _ = _build_symbol_page(
         all_symbols=snap.all_symbols,
         group=str(context.user_data.get(KEY_GROUP)),
         query=str(context.user_data.get(KEY_QUERY, "")),
@@ -263,13 +285,7 @@ async def symbol_search_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     context.user_data[KEY_PAGE] = page
 
-    await _edit_message(
-        context,
-        chat_id=chat.id,
-        message_id=msg_id,
-        text=header,
-        reply_markup=markup,
-    )
+    await _edit_message(context, chat.id, msg_id, text, markup)
 
     try:
         await update.message.delete()
@@ -280,6 +296,9 @@ async def symbol_search_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def price_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not update.message:
+        return ConversationHandler.END
+
     raw = (update.message.text or "").strip()
     try:
         price = float(raw)
@@ -298,17 +317,20 @@ async def price_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 InlineKeyboardButton("Below", callback_data="dir:below"),
             ],
             [
-                InlineKeyboardButton("⬅ Back", callback_data="nav:back_price"),
-                InlineKeyboardButton("✖ Cancel", callback_data="nav:cancel"),
+                InlineKeyboardButton("Back", callback_data="nav:back_price"),
+                InlineKeyboardButton("Cancel", callback_data="nav:cancel"),
             ],
         ]
     )
-    await update.message.reply_text("Set Alert (Step D)\nChoose direction:", reply_markup=kb)
+    await update.message.reply_text("Choose direction:", reply_markup=kb)
     return int(SetAlertState.CHOOSE_DIRECTION)
 
 
 async def direction_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+
     await q.answer()
     data = q.data or ""
 
@@ -333,17 +355,20 @@ async def direction_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 InlineKeyboardButton("Repeat", callback_data="mode:repeat"),
             ],
             [
-                InlineKeyboardButton("⬅ Back", callback_data="nav:back_dir"),
-                InlineKeyboardButton("✖ Cancel", callback_data="nav:cancel"),
+                InlineKeyboardButton("Back", callback_data="nav:back_dir"),
+                InlineKeyboardButton("Cancel", callback_data="nav:cancel"),
             ],
         ]
     )
-    await q.edit_message_text("Set Alert (Step E)\nChoose alert mode:", reply_markup=kb)
+    await q.edit_message_text("Choose alert mode:", reply_markup=kb)
     return int(SetAlertState.CHOOSE_MODE)
 
 
 async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+
     await q.answer()
     data = q.data or ""
 
@@ -359,12 +384,12 @@ async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     InlineKeyboardButton("Below", callback_data="dir:below"),
                 ],
                 [
-                    InlineKeyboardButton("⬅ Back", callback_data="nav:back_price"),
-                    InlineKeyboardButton("✖ Cancel", callback_data="nav:cancel"),
+                    InlineKeyboardButton("Back", callback_data="nav:back_price"),
+                    InlineKeyboardButton("Cancel", callback_data="nav:cancel"),
                 ],
             ]
         )
-        await q.edit_message_text("Set Alert (Step D)\nChoose direction:", reply_markup=kb)
+        await q.edit_message_text("Choose direction:", reply_markup=kb)
         return int(SetAlertState.CHOOSE_DIRECTION)
 
     if data not in ("mode:once", "mode:repeat"):
@@ -373,26 +398,26 @@ async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     context.user_data[KEY_MODE] = data.split(":", 1)[1]
 
-    symbol = context.user_data.get(KEY_SYMBOL)
+    symbol_name = context.user_data.get(KEY_SYMBOL_NAME) or context.user_data.get(KEY_SYMBOL)
     price = context.user_data.get(KEY_PRICE)
     direction = context.user_data.get(KEY_DIRECTION)
     mode = context.user_data.get(KEY_MODE)
 
     kb = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("✅ Confirm & Save", callback_data="cnf:save")],
+            [InlineKeyboardButton("Confirm & Save", callback_data="cnf:save")],
             [
-                InlineKeyboardButton("⬅ Back", callback_data="nav:back_mode"),
-                InlineKeyboardButton("✖ Cancel", callback_data="nav:cancel"),
+                InlineKeyboardButton("Back", callback_data="nav:back_mode"),
+                InlineKeyboardButton("Cancel", callback_data="nav:cancel"),
             ],
         ]
     )
 
     await q.edit_message_text(
-        "Set Alert (Step F)\nConfirm:\n"
-        f"Symbol: {symbol}\n"
+        "Confirm alert:\n"
+        f"Symbol: {symbol_name}\n"
         f"Price: {price}\n"
-        f"Direction: {direction}\n"
+        f"Direction: {str(direction).upper()}\n"
         f"Mode: {mode}\n",
         reply_markup=kb,
     )
@@ -401,6 +426,9 @@ async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
+    if not q or not update.effective_user:
+        return ConversationHandler.END
+
     await q.answer()
     data = q.data or ""
 
@@ -416,12 +444,12 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     InlineKeyboardButton("Repeat", callback_data="mode:repeat"),
                 ],
                 [
-                    InlineKeyboardButton("⬅ Back", callback_data="nav:back_dir"),
-                    InlineKeyboardButton("✖ Cancel", callback_data="nav:cancel"),
+                    InlineKeyboardButton("Back", callback_data="nav:back_dir"),
+                    InlineKeyboardButton("Cancel", callback_data="nav:cancel"),
                 ],
             ]
         )
-        await q.edit_message_text("Set Alert (Step E)\nChoose alert mode:", reply_markup=kb)
+        await q.edit_message_text("Choose alert mode:", reply_markup=kb)
         return int(SetAlertState.CHOOSE_MODE)
 
     if data != "cnf:save":
@@ -430,6 +458,7 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     user_id = int(update.effective_user.id)
     symbol = str(context.user_data.get(KEY_SYMBOL))
+    symbol_name = str(context.user_data.get(KEY_SYMBOL_NAME) or symbol)
     price = float(context.user_data.get(KEY_PRICE))
     direction = str(context.user_data.get(KEY_DIRECTION))
     mode = str(context.user_data.get(KEY_MODE))
@@ -441,7 +470,6 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         repo = Repo(conn)
         await repo.upsert_user(user_id)
 
-        # Enforce again at save time (critical safety)
         plan = await repo.get_user_plan(user_id)
         active_count = await repo.count_active_alerts(user_id)
         chk = can_create_alert(plan, active_count)
@@ -460,12 +488,20 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     finally:
         await conn.close()
 
-    await q.edit_message_text(f"Saved alert #{alert_id} ✅\n\nUse /viewalerts to see all alerts.")
+    await q.edit_message_text(
+        f"Saved alert #{alert_id} ✅\n\n"
+        f"Symbol: {symbol_name}\n"
+        f"Price: {price}\n"
+        f"Direction: {direction.upper()}\n"
+        f"Mode: {mode}\n\n"
+        "Use /viewalerts to see your alerts."
+    )
     return ConversationHandler.END
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Cancelled.")
+    if update.message:
+        await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
 
@@ -474,8 +510,8 @@ def build_setalert_conversation() -> ConversationHandler:
         entry_points=[CommandHandler("setalert", setalert_start)],
         states={
             int(SetAlertState.CHOOSE_GROUP): [
-                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:"),
-                CallbackQueryHandler(choose_group_cb, pattern=r"^nav:cancel$"),
+                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:(forex|vol)$"),
+                CallbackQueryHandler(cancel_from_group_cb, pattern=r"^nav:cancel$"),
             ],
             int(SetAlertState.CHOOSE_SYMBOL): [
                 CallbackQueryHandler(symbol_cb, pattern=r"^(sym:|nav:)"),

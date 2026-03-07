@@ -11,21 +11,19 @@ KEY_SELECTED = "da_selected"
 
 
 def _render(alerts, selected: set[int]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-
+    rows = []
     for a in alerts[:30]:
         mark = "✅" if a.id in selected else "⬜"
-        label = f"{mark} #{a.id} {a.symbol} {str(a.direction).upper()} {a.price} ({a.mode})"
+        label = f"{mark} #{a.id} {a.symbol} {a.direction.upper()} {a.price} ({a.mode})"
         rows.append([InlineKeyboardButton(label, callback_data=f"tog:{a.id}")])
 
     rows.append(
         [
-            InlineKeyboardButton("🗑 Deactivate Selected", callback_data="act:delete"),
+            InlineKeyboardButton("Deactivate Selected", callback_data="act:delete"),
             InlineKeyboardButton("Clear", callback_data="act:clear"),
         ]
     )
-    rows.append([InlineKeyboardButton("✖ Cancel", callback_data="act:cancel")])
-
+    rows.append([InlineKeyboardButton("Cancel", callback_data="act:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -47,10 +45,7 @@ async def deletealert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("No active alerts to delete.")
         return
 
-    await update.message.reply_text(
-        "Select alerts to deactivate. Tap to toggle:",
-        reply_markup=_render(alerts, set()),
-    )
+    await update.message.reply_text("Select alerts to deactivate:", reply_markup=_render(alerts, set()))
 
 
 async def deletealert_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -59,7 +54,6 @@ async def deletealert_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_id = int(update.effective_user.id)
     data = q.data or ""
-
     selected: set[int] = context.user_data.get(KEY_SELECTED) or set()
     context.user_data[KEY_SELECTED] = selected
 

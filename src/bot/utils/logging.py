@@ -1,13 +1,13 @@
 ﻿from __future__ import annotations
 
 import logging
-from rich.logging import RichHandler
+import sys
 
 
 def setup_logging(level: str = "INFO") -> None:
     logging.basicConfig(
-        level=level,
-        format="%(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="[%(asctime)s] %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
     )

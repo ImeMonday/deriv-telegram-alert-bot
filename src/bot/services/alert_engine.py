@@ -18,7 +18,6 @@ def _parse_sqlite_ts(value: str) -> datetime | None:
         return dt.replace(tzinfo=timezone.utc)
     except Exception:
         pass
-
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
@@ -34,20 +33,18 @@ class AlertEngine:
         self._log = logging.getLogger("alert.engine")
         self._settings: Settings = app.bot_data["settings"]
 
-        self._stream = DerivTickStream(
-            base_url=self._settings.deriv_ws_url,
-            app_id=self._settings.deriv_app_id,
-        )
+        self._stream = DerivTickStream(self._settings.deriv_ws_url, self._settings.deriv_app_id)
 
         self._db = Database(DbConfig(path=self._settings.db_path))
         self._conn = None
         self._repo: Repo | None = None
 
         self._task: asyncio.Task | None = None
+        self._sub_task: asyncio.Task | None = None
         self._running = False
 
-        self._sub_task: asyncio.Task | None = None
         self._refresh_every_sec = 10
+        self._last_symbols: set[str] = set()
 
     async def start(self) -> None:
         if self._running:
@@ -84,11 +81,9 @@ class AlertEngine:
     async def _main_loop(self) -> None:
         await self._stream.connect()
         await self._refresh_subscriptions()
-
         await self._stream.run(self._on_tick)
 
     async def _subscription_loop(self) -> None:
-       
         while self._running:
             try:
                 await asyncio.sleep(self._refresh_every_sec)
@@ -102,6 +97,12 @@ class AlertEngine:
         assert self._repo is not None
 
         symbols = await self._repo.active_symbols()
+        new_set = set(symbols)
+
+        if new_set == self._last_symbols:
+            return
+
+        self._last_symbols = new_set
 
         await self._stream.unsubscribe_all()
         for s in symbols:
@@ -109,7 +110,6 @@ class AlertEngine:
 
     async def _on_tick(self, symbol: str, price: float) -> None:
         assert self._repo is not None
-
         try:
             alerts = await self._repo.list_active_alerts_for_symbols([symbol])
             for a in alerts:
@@ -122,7 +122,6 @@ class AlertEngine:
 
                 deactivate = (a.mode == "once")
                 await self._repo.update_triggered(a.id, deactivate=deactivate)
-
         except Exception as e:
             self._log.warning("Tick handling failed (%s): %s", symbol, e)
 
@@ -136,18 +135,15 @@ class AlertEngine:
     def _cooldown_ok(self, alert) -> bool:
         if not alert.last_triggered_at:
             return True
-
         last = _parse_sqlite_ts(str(alert.last_triggered_at))
         if not last:
             return True
-
         now = datetime.now(timezone.utc)
-        diff = (now - last).total_seconds()
-        return diff >= alert.cooldown_seconds
+        return (now - last).total_seconds() >= alert.cooldown_seconds
 
     async def _notify(self, user_id: int, symbol: str, price: float, direction: str, target: float) -> None:
         text = (
-            "🔔 Alert Triggered\n"
+            "Alert Triggered\n"
             f"Symbol: {symbol}\n"
             f"Current: {price}\n"
             f"Target: {target}\n"

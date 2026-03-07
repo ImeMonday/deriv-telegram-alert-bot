@@ -4,6 +4,7 @@ from enum import IntEnum
 
 
 class SetAlertState(IntEnum):
+    """Conversation handler states for /setalert command"""
     CHOOSE_GROUP = 1
     CHOOSE_SYMBOL = 2
     ENTER_PRICE = 3
