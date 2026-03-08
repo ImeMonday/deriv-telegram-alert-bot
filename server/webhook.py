@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from fastapi import FastAPI, Request
 
@@ -15,14 +16,45 @@ app = FastAPI()
 
 settings = load_settings()
 
+START_TIME = time.time()
+
+
+@app.get("/health")
+async def health():
+
+    db = Database(DbConfig(path=settings.db_path))
+
+    try:
+        conn = await db.connect()
+
+        async with conn.execute("SELECT 1") as cur:
+            await cur.fetchone()
+
+        await conn.close()
+
+        return {
+            "status": "ok",
+            "service": "paystack-webhook",
+            "database": "connected",
+            "uptime_seconds": int(time.time() - START_TIME),
+        }
+
+    except Exception as e:
+        return {
+            "status": "degraded",
+            "service": "paystack-webhook",
+            "database": "error",
+            "error": str(e),
+        }
+
 
 @app.post("/paystack/webhook")
 async def paystack_webhook(request: Request):
 
     raw_body = await request.body()
+
     signature = request.headers.get("x-paystack-signature")
 
-    # 1) Verify request came from Paystack
     if not verify_paystack_signature(settings.paystack_secret_key, raw_body, signature):
         return {"status": "invalid signature"}
 
@@ -30,7 +62,6 @@ async def paystack_webhook(request: Request):
 
     event = body.get("event")
 
-    # 2) Only handle successful charge
     if event != "charge.success":
         return {"status": "ignored"}
 
@@ -40,9 +71,8 @@ async def paystack_webhook(request: Request):
     user_id = metadata.get("telegram_user_id")
 
     if not user_id:
-        return {"status": "missing telegram id"}
+        return {"status": "missing telegram_user_id"}
 
-    # unique id for this Paystack event
     event_key = str(data.get("id"))
 
     db = Database(DbConfig(path=settings.db_path))
@@ -51,13 +81,11 @@ async def paystack_webhook(request: Request):
     try:
         repo = Repo(conn)
 
-        # 3) Prevent duplicate processing
         processed = await repo.mark_event_processed(event_key)
 
         if not processed:
-            return {"status": "duplicate event"}
+            return {"status": "duplicate"}
 
-        # 4) Activate premium
         await repo.set_user_plan(int(user_id), "premium")
 
     finally:
