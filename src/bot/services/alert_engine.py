@@ -10,6 +10,7 @@ from bot.config import Settings
 from bot.db.base import Database, DbConfig
 from bot.db.repo import Repo
 from bot.deriv.stream import DerivTickStream
+from bot.deriv.symbols import display_name_for_symbol
 
 
 def _parse_sqlite_ts(value: str) -> datetime | None:
@@ -118,7 +119,14 @@ class AlertEngine:
                 if not self._cooldown_ok(a):
                     continue
 
-                await self._notify(a.user_id, symbol, price, a.direction, a.price)
+                await self._notify(
+                    a.user_id,
+                    symbol=symbol,
+                    price=price,
+                    direction=a.direction,
+                    target=a.price,
+                    mode=a.mode,
+                )
 
                 deactivate = (a.mode == "once")
                 await self._repo.update_triggered(a.id, deactivate=deactivate)
@@ -141,13 +149,25 @@ class AlertEngine:
         now = datetime.now(timezone.utc)
         return (now - last).total_seconds() >= alert.cooldown_seconds
 
-    async def _notify(self, user_id: int, symbol: str, price: float, direction: str, target: float) -> None:
+    async def _notify(
+        self,
+        user_id: int,
+        *,
+        symbol: str,
+        price: float,
+        direction: str,
+        target: float,
+        mode: str,
+    ) -> None:
+        full_name = display_name_for_symbol(symbol)
+
         text = (
-            "Alert Triggered\n"
-            f"Symbol: {symbol}\n"
-            f"Current: {price}\n"
+            "🎯 Alert Triggered\n\n"
+            f"Symbol: {full_name}\n"
+            f"Current Price: {price}\n"
             f"Target: {target}\n"
-            f"Direction: {direction.upper()}"
+            f"Direction: {direction.title()}\n"
+            f"Mode: {mode.title()}"
         )
         try:
             await self._app.bot.send_message(chat_id=user_id, text=text)

@@ -1,97 +1,108 @@
 from __future__ import annotations
 
+import aiosqlite
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.config import Settings
-from bot.db.base import Database, DbConfig
-from bot.db.repo import Repo
-
-KEY_SELECTED = "da_selected"
+from bot.db.repo import Alert, Repo
+from bot.deriv.symbols import display_name_for_symbol
 
 
-def _render(alerts, selected: set[int]) -> InlineKeyboardMarkup:
-    rows = []
-    for a in alerts[:30]:
-        mark = "✅" if a.id in selected else "⬜"
-        label = f"{mark} #{a.id} {a.symbol} {a.direction.upper()} {a.price} ({a.mode})"
-        rows.append([InlineKeyboardButton(label, callback_data=f"tog:{a.id}")])
+def _active_alert_buttons(alerts: list[Alert]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
 
-    rows.append(
-        [
-            InlineKeyboardButton("Deactivate Selected", callback_data="act:delete"),
-            InlineKeyboardButton("Clear", callback_data="act:clear"),
-        ]
-    )
-    rows.append([InlineKeyboardButton("Cancel", callback_data="act:cancel")])
+    for alert in alerts[:30]:
+        label = f"❌ #{alert.id} {display_name_for_symbol(alert.symbol)}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"del:{alert.id}")])
+
+    rows.append([InlineKeyboardButton("❌ Delete all active alerts", callback_data="del:all")])
+    rows.append([InlineKeyboardButton("Close", callback_data="del:close")])
     return InlineKeyboardMarkup(rows)
 
 
 async def deletealert_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = int(update.effective_user.id)
-    context.user_data[KEY_SELECTED] = set()
+    if not update.message or not update.effective_user:
+        return
 
+    user_id = int(update.effective_user.id)
     settings: Settings = context.application.bot_data["settings"]
-    db = Database(DbConfig(path=settings.db_path))
-    conn = await db.connect()
+
+    conn = await aiosqlite.connect(settings.db_path)
     try:
         repo = Repo(conn)
+        await repo.ensure_schema()
         await repo.upsert_user(user_id)
-        alerts = await repo.list_alerts(user_id=user_id, active_only=True)
+        alerts = await repo.list_user_alerts(user_id)
+        active_alerts = [a for a in alerts if a.active == 1]
     finally:
         await conn.close()
 
-    if not alerts:
+    if not active_alerts:
         await update.message.reply_text("No active alerts to delete.")
         return
 
-    await update.message.reply_text("Select alerts to deactivate:", reply_markup=_render(alerts, set()))
+    await update.message.reply_text(
+        "Select the alert you want to delete:",
+        reply_markup=_active_alert_buttons(active_alerts),
+    )
 
 
 async def deletealert_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
+    if not q:
+        return
+
     await q.answer()
 
-    user_id = int(update.effective_user.id)
+    user = q.from_user
+    if not user:
+        return
+
     data = q.data or ""
-    selected: set[int] = context.user_data.get(KEY_SELECTED) or set()
-    context.user_data[KEY_SELECTED] = selected
+    if not data.startswith("del:"):
+        return
+
+    action = data.removeprefix("del:")
+    if action == "close":
+        await q.edit_message_text("Closed.")
+        return
 
     settings: Settings = context.application.bot_data["settings"]
-    db = Database(DbConfig(path=settings.db_path))
-    conn = await db.connect()
+
+    conn = await aiosqlite.connect(settings.db_path)
     try:
         repo = Repo(conn)
-        alerts = await repo.list_alerts(user_id=user_id, active_only=True)
+        await repo.ensure_schema()
 
-        if data.startswith("tog:"):
-            aid = int(data.split(":", 1)[1])
-            if aid in selected:
-                selected.remove(aid)
-            else:
-                selected.add(aid)
-            await q.edit_message_reply_markup(reply_markup=_render(alerts, selected))
+        if action == "all":
+            alerts = await repo.list_user_alerts(user.id)
+            active_ids = [a.id for a in alerts if a.active == 1]
+            deleted = await repo.deactivate_alerts(user.id, active_ids)
+            await q.edit_message_text(f"Deleted {deleted} active alert(s).")
             return
 
-        if data == "act:clear":
-            selected.clear()
-            await q.edit_message_reply_markup(reply_markup=_render(alerts, selected))
+        try:
+            alert_id = int(action)
+        except ValueError:
+            await q.edit_message_text("Invalid alert selection.")
             return
 
-        if data == "act:cancel":
-            selected.clear()
-            await q.edit_message_text("Cancelled.")
+        deleted = await repo.deactivate_alerts(user.id, [alert_id])
+        if deleted == 0:
+            await q.edit_message_text("That alert was not found or is already inactive.")
             return
 
-        if data == "act:delete":
-            if not selected:
-                await q.edit_message_text("No alerts selected.")
-                return
-            n = await repo.deactivate_alerts(user_id=user_id, alert_ids=sorted(selected))
-            selected.clear()
-            await q.edit_message_text(f"Deactivated {n} alert(s). Use /viewalerts to confirm.")
+        alerts = await repo.list_user_alerts(user.id)
+        active_alerts = [a for a in alerts if a.active == 1]
+
+        if not active_alerts:
+            await q.edit_message_text(f"Alert #{alert_id} deleted. No active alerts left.")
             return
 
-        await q.edit_message_text("Invalid action.")
+        await q.edit_message_text(
+            f"Alert #{alert_id} deleted.\n\nSelect another alert to delete:",
+            reply_markup=_active_alert_buttons(active_alerts),
+        )
     finally:
         await conn.close()

@@ -3,18 +3,19 @@ from __future__ import annotations
 import logging
 import traceback
 
+from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.config import Settings
 from bot.db.base import Database, DbConfig
 from bot.db.repo import Repo
 from bot.deriv.client import DerivWsClient
-from bot.handlers.admin import free_cmd, premium_cmd, setplan_cmd, adminstats_cmd
+from bot.handlers.admin import adminstats_cmd, free_cmd, premium_cmd, setplan_cmd
 from bot.handlers.deletealert import deletealert_cb, deletealert_cmd
 from bot.handlers.setalert import build_setalert_conversation
 from bot.handlers.start import start_cmd
-from bot.handlers.upgrade import upgrade_cmd
-from bot.handlers.viewalerts import viewalerts_cmd
+from bot.handlers.upgrade import build_upgrade_handlers
+from bot.handlers.viewalerts import myalerts_cmd
 from bot.services.alert_engine import AlertEngine
 from bot.services.symbol_cache import SymbolCache
 
@@ -40,6 +41,11 @@ async def log_any_callback(update, context) -> None:
     )
 
 
+async def cancel_cmd(update: Update, context) -> None:
+    if update.message:
+        await update.message.reply_text("Cancelled.")
+
+
 def build_app(settings: Settings) -> Application:
     app = Application.builder().token(settings.telegram_bot_token).build()
 
@@ -57,7 +63,6 @@ def build_app(settings: Settings) -> Application:
     async def _on_start(app: Application):
         LOG.info("Bot starting...")
 
-        # Ensure DB schema is fully up to date before any handler/service uses it
         db = Database(DbConfig(path=settings.db_path))
         conn = await db.connect()
         try:
@@ -94,27 +99,22 @@ def build_app(settings: Settings) -> Application:
 
     app.post_init = _on_start
     app.post_shutdown = _on_stop
-
     app.add_error_handler(on_error)
 
-    # Commands
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("viewalerts", viewalerts_cmd))
-    app.add_handler(CommandHandler("upgrade", upgrade_cmd))
-    app.add_handler(CommandHandler("adminstats", adminstats_cmd))
+    app.add_handler(CommandHandler("myalerts", myalerts_cmd))
     app.add_handler(CommandHandler("deletealert", deletealert_cmd))
+    app.add_handler(CommandHandler("adminstats", adminstats_cmd))
     app.add_handler(CommandHandler("setplan", setplan_cmd))
     app.add_handler(CommandHandler("premium", premium_cmd))
     app.add_handler(CommandHandler("free", free_cmd))
-    app.add_handler(CommandHandler("cancel", lambda u, c: u.message.reply_text("Cancelled.")))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
 
-    # Debug callback logger
+    for handler in build_upgrade_handlers():
+        app.add_handler(handler)
+
     app.add_handler(CallbackQueryHandler(log_any_callback, pattern=r".*", block=False), group=0)
-
-    # Main conversation
     app.add_handler(build_setalert_conversation(), group=1)
-
-    # Other callback handlers
-    app.add_handler(CallbackQueryHandler(deletealert_cb, pattern=r"^(tog:|act:)"), group=2)
+    app.add_handler(CallbackQueryHandler(deletealert_cb, pattern=r"^del:"), group=2)
 
     return app

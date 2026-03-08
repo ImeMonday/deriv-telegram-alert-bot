@@ -15,7 +15,7 @@ from telegram.ext import (
 from bot.config import Settings
 from bot.db.base import Database, DbConfig
 from bot.db.repo import Repo
-from bot.deriv.symbols import SymbolCatalog
+from bot.deriv.symbols import display_name_for_symbol, is_synthetic_symbol
 from bot.handlers.common import nav_keyboard
 from bot.services.limits import can_create_alert
 from bot.services.state import SetAlertState
@@ -38,7 +38,7 @@ def _group_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Forex Pairs", callback_data="grp:forex")],
-            [InlineKeyboardButton("Volatility Indices", callback_data="grp:vol")],
+            [InlineKeyboardButton("Synthetic Indices", callback_data="grp:synthetic")],
             [InlineKeyboardButton("Cancel", callback_data="nav:cancel")],
         ]
     )
@@ -59,24 +59,80 @@ async def _edit_message(
     )
 
 
+def _forex_symbols(all_symbols) -> list:
+    out = []
+    for s in all_symbols:
+        symbol = str(getattr(s, "symbol", "") or "")
+        display_name = str(getattr(s, "display_name", "") or "")
+        if "/" in display_name or symbol.upper().startswith("FRX"):
+            out.append(s)
+    return out
+
+
+def _synthetic_symbols(all_symbols) -> list:
+    out = []
+    for s in all_symbols:
+        symbol = str(getattr(s, "symbol", "") or "")
+        if is_synthetic_symbol(symbol):
+            out.append(s)
+    return out
+
+
+def _search_symbols(items: list, query: str) -> list:
+    q = (query or "").strip().lower()
+    if not q:
+        return items
+
+    out = []
+    for s in items:
+        symbol = str(getattr(s, "symbol", "") or "")
+        display_name = str(getattr(s, "display_name", "") or "")
+        full_name = display_name_for_symbol(symbol)
+        hay = f"{symbol} {display_name} {full_name}".lower()
+        if q in hay:
+            out.append(s)
+    return out
+
+
+def _paginate(items: list, page: int, page_size: int = 12) -> tuple[list, int]:
+    if not items:
+        return [], 1
+
+    total_pages = (len(items) + page_size - 1) // page_size
+    page = max(0, min(page, total_pages - 1))
+    start = page * page_size
+    end = start + page_size
+    return items[start:end], total_pages
+
+
 def _build_symbol_page(*, all_symbols, group: str, query: str, page: int, page_size: int = 12):
     if group == "forex":
-        items = SymbolCatalog.forex_pairs(all_symbols)
+        items = _forex_symbols(all_symbols)
         title = "Forex Pairs"
+        sort_key = lambda s: str(getattr(s, "display_name", "") or getattr(s, "symbol", "")).lower()
     else:
-        items = SymbolCatalog.volatility_indices(all_symbols)
-        title = "Volatility Indices"
+        items = _synthetic_symbols(all_symbols)
+        title = "Synthetic Indices"
+        sort_key = lambda s: display_name_for_symbol(str(getattr(s, "symbol", "") or "")).lower()
 
-    filtered = SymbolCatalog.search(items, query)
-    page_items, total_pages = SymbolCatalog.paginate(filtered, page, page_size=page_size)
+    items = sorted(items, key=sort_key)
+    filtered = _search_symbols(items, query)
+    page_items, total_pages = _paginate(filtered, page, page_size=page_size)
 
     rows = []
     row = []
     for s in page_items:
-        row.append(InlineKeyboardButton(s.display_name, callback_data=f"sym:{s.symbol}"))
+        symbol = str(getattr(s, "symbol", "") or "")
+        if group == "synthetic":
+            label = display_name_for_symbol(symbol)
+        else:
+            label = str(getattr(s, "display_name", "") or symbol)
+
+        row.append(InlineKeyboardButton(label, callback_data=f"sym:{symbol}"))
         if len(row) == 2:
             rows.append(row)
             row = []
+
     if row:
         rows.append(row)
 
@@ -86,12 +142,21 @@ def _build_symbol_page(*, all_symbols, group: str, query: str, page: int, page_s
     for r in nav.inline_keyboard:
         rows.append(r)
 
-    text = (
-        f"{title}\n"
-        f"Search: {query if query else '(type to search)'}\n"
-        f"Page: {page + 1}/{total_pages}\n\n"
-        "Pick a symbol:"
-    )
+    if not filtered:
+        text = (
+            f"{title}\n"
+            f"Search: {query if query else '(type to search)'}\n"
+            f"Page: 1/1\n\n"
+            "No symbols found. Type to search again or tap Back."
+        )
+    else:
+        text = (
+            f"{title}\n"
+            f"Search: {query if query else '(type to search)'}\n"
+            f"Page: {page + 1}/{total_pages}\n\n"
+            "Pick a symbol:"
+        )
+
     return text, InlineKeyboardMarkup(rows), page, total_pages
 
 
@@ -155,8 +220,8 @@ async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "grp:forex":
         context.user_data[KEY_GROUP] = "forex"
-    elif data == "grp:vol":
-        context.user_data[KEY_GROUP] = "vol"
+    elif data == "grp:synthetic":
+        context.user_data[KEY_GROUP] = "synthetic"
     else:
         await q.edit_message_text("Invalid selection. Use /setalert again.")
         return ConversationHandler.END
@@ -236,20 +301,10 @@ async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if data.startswith("sym:"):
         symbol = data.split(":", 1)[1].strip()
         context.user_data[KEY_SYMBOL] = symbol
-
-        cache: SymbolCache = context.application.bot_data["symbol_cache"]
-        snap = await cache.get()
-
-        symbol_name = symbol
-        for s in snap.all_symbols:
-            if s.symbol == symbol:
-                symbol_name = s.display_name
-                break
-
-        context.user_data[KEY_SYMBOL_NAME] = symbol_name
+        context.user_data[KEY_SYMBOL_NAME] = display_name_for_symbol(symbol)
 
         await q.edit_message_text(
-            f"Selected: {symbol_name}\n\n"
+            f"Selected: {display_name_for_symbol(symbol)}\n\n"
             "Send the price level as a number.\n"
             "Example: 1.2500 or 250.5\n\n"
             "Send /cancel to stop."
@@ -494,7 +549,7 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"Price: {price}\n"
         f"Direction: {direction.upper()}\n"
         f"Mode: {mode}\n\n"
-        "Use /viewalerts to see your alerts."
+        "Use /myalerts to see your alerts."
     )
     return ConversationHandler.END
 
@@ -510,7 +565,7 @@ def build_setalert_conversation() -> ConversationHandler:
         entry_points=[CommandHandler("setalert", setalert_start)],
         states={
             int(SetAlertState.CHOOSE_GROUP): [
-                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:(forex|vol)$"),
+                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:(forex|synthetic)$"),
                 CallbackQueryHandler(cancel_from_group_cb, pattern=r"^nav:cancel$"),
             ],
             int(SetAlertState.CHOOSE_SYMBOL): [
