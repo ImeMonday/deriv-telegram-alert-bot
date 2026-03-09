@@ -68,77 +68,7 @@ class Repo:
             """
         )
 
-        await self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS processed_paystack_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_key TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-
-        user_cols = await self._table_columns("users")
-
-        if "payment_email" not in user_cols:
-            await self._conn.execute(
-                "ALTER TABLE users ADD COLUMN payment_email TEXT"
-            )
-
-        if "paystack_customer_code" not in user_cols:
-            await self._conn.execute(
-                "ALTER TABLE users ADD COLUMN paystack_customer_code TEXT"
-            )
-
-        if "paystack_subscription_code" not in user_cols:
-            await self._conn.execute(
-                "ALTER TABLE users ADD COLUMN paystack_subscription_code TEXT"
-            )
-
-        if "paystack_email_token" not in user_cols:
-            await self._conn.execute(
-                "ALTER TABLE users ADD COLUMN paystack_email_token TEXT"
-            )
-
-        if "premium_renews_at" not in user_cols:
-            await self._conn.execute(
-                "ALTER TABLE users ADD COLUMN premium_renews_at TEXT"
-            )
-
-        if "premium_status" not in user_cols:
-            await self._conn.execute(
-                "ALTER TABLE users ADD COLUMN premium_status TEXT NOT NULL DEFAULT 'inactive'"
-            )
-
-        alert_cols = await self._table_columns("alerts")
-
-        if "cooldown_seconds" not in alert_cols:
-            await self._conn.execute(
-                "ALTER TABLE alerts ADD COLUMN cooldown_seconds INTEGER NOT NULL DEFAULT 30"
-            )
-
-        if "active" not in alert_cols:
-            await self._conn.execute(
-                "ALTER TABLE alerts ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
-            )
-
-        if "last_triggered_at" not in alert_cols:
-            await self._conn.execute(
-                "ALTER TABLE alerts ADD COLUMN last_triggered_at TEXT"
-            )
-
-        if "created_at" not in alert_cols:
-            await self._conn.execute(
-                "ALTER TABLE alerts ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            )
-
         await self._conn.commit()
-
-
-    async def _table_columns(self, table_name: str) -> set[str]:
-        async with self._conn.execute(f"PRAGMA table_info({table_name})") as cur:
-            rows = await cur.fetchall()
-        return {str(row[1]) for row in rows}
 
 
     async def upsert_user(self, user_id: int) -> None:
@@ -154,6 +84,7 @@ class Repo:
 
 
     async def get_user_plan(self, user_id: int) -> str:
+
         await self.upsert_user(user_id)
 
         async with self._conn.execute(
@@ -166,6 +97,7 @@ class Repo:
 
 
     async def set_user_plan(self, user_id: int, plan: str) -> None:
+
         await self.upsert_user(user_id)
 
         premium_status = "active" if plan == "premium" else "inactive"
@@ -182,41 +114,8 @@ class Repo:
         await self._conn.commit()
 
 
-    async def get_user_email(self, user_id: int) -> str | None:
-
-        async with self._conn.execute(
-            """
-            SELECT payment_email
-            FROM users
-            WHERE user_id = ?
-            """,
-            (int(user_id),),
-        ) as cur:
-            row = await cur.fetchone()
-
-        if not row:
-            return None
-
-        return row[0]
-
-
-    async def set_user_email(self, user_id: int, email: str) -> None:
-
-        await self.upsert_user(user_id)
-
-        await self._conn.execute(
-            """
-            UPDATE users
-            SET payment_email = ?
-            WHERE user_id = ?
-            """,
-            (email, int(user_id)),
-        )
-
-        await self._conn.commit()
-
-
     async def count_active_alerts(self, user_id: int) -> int:
+
         async with self._conn.execute(
             """
             SELECT COUNT(*)
@@ -271,6 +170,78 @@ class Repo:
         await self._conn.commit()
 
         return int(cur.lastrowid)
+
+
+    async def deactivate_alert(self, alert_id: int) -> None:
+
+        await self._conn.execute(
+            """
+            UPDATE alerts
+            SET active = 0
+            WHERE id = ?
+            """,
+            (int(alert_id),),
+        )
+
+        await self._conn.commit()
+
+
+    async def active_alerts(self) -> list[Alert]:
+
+        async with self._conn.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                symbol,
+                price,
+                direction,
+                mode,
+                cooldown_seconds,
+                active,
+                last_triggered_at,
+                created_at
+            FROM alerts
+            WHERE active = 1
+            """
+        ) as cur:
+
+            rows = await cur.fetchall()
+
+        return [self._row_to_alert(r) for r in rows]
+
+
+    async def active_symbols(self) -> list[str]:
+        """
+        Return all symbols currently used by active alerts.
+        Used by alert engine to subscribe to price streams.
+        """
+
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT symbol
+            FROM alerts
+            WHERE active = 1
+            """
+        ) as cur:
+
+            rows = await cur.fetchall()
+
+        return [str(r[0]) for r in rows]
+
+
+    async def update_last_triggered(self, alert_id: int) -> None:
+
+        await self._conn.execute(
+            """
+            UPDATE alerts
+            SET last_triggered_at = ?
+            WHERE id = ?
+            """,
+            (_utc_now_iso(), int(alert_id)),
+        )
+
+        await self._conn.commit()
 
 
     def _row_to_alert(self, row: Any) -> Alert:
