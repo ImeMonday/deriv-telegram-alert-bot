@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, List
 
 import aiosqlite
 
@@ -28,6 +28,10 @@ class Alert:
 class Repo:
     def __init__(self, conn: aiosqlite.Connection):
         self._conn = conn
+
+    # -----------------------------------------------------
+    # SCHEMA
+    # -----------------------------------------------------
 
     async def ensure_schema(self) -> None:
 
@@ -68,6 +72,10 @@ class Repo:
         )
 
         await self._conn.commit()
+
+    # -----------------------------------------------------
+    # USERS
+    # -----------------------------------------------------
 
     async def upsert_user(self, user_id: int) -> None:
 
@@ -111,19 +119,57 @@ class Repo:
 
         await self._conn.commit()
 
+    async def set_user_email(self, user_id: int, email: str) -> None:
+
+        await self.upsert_user(user_id)
+
+        await self._conn.execute(
+            """
+            UPDATE users
+            SET payment_email = ?
+            WHERE user_id = ?
+            """,
+            (email, int(user_id)),
+        )
+
+        await self._conn.commit()
+
+    async def get_user_email(self, user_id: int) -> str | None:
+
+        async with self._conn.execute(
+            """
+            SELECT payment_email
+            FROM users
+            WHERE user_id = ?
+            """,
+            (int(user_id),),
+        ) as cur:
+            row = await cur.fetchone()
+
+        return row[0] if row else None
+
+    # -----------------------------------------------------
+    # ALERT COUNTS
+    # -----------------------------------------------------
+
     async def count_active_alerts(self, user_id: int) -> int:
 
         async with self._conn.execute(
             """
             SELECT COUNT(*)
             FROM alerts
-            WHERE user_id = ? AND active = 1
+            WHERE user_id = ?
+            AND active = 1
             """,
             (int(user_id),),
         ) as cur:
             row = await cur.fetchone()
 
         return int(row[0]) if row else 0
+
+    # -----------------------------------------------------
+    # CREATE ALERT
+    # -----------------------------------------------------
 
     async def create_alert(
         self,
@@ -167,20 +213,11 @@ class Repo:
 
         return int(cur.lastrowid)
 
-    async def deactivate_alert(self, alert_id: int) -> None:
+    # -----------------------------------------------------
+    # LIST USER ALERTS
+    # -----------------------------------------------------
 
-        await self._conn.execute(
-            """
-            UPDATE alerts
-            SET active = 0
-            WHERE id = ?
-            """,
-            (int(alert_id),),
-        )
-
-        await self._conn.commit()
-
-    async def active_alerts(self) -> list[Alert]:
+    async def list_user_alerts(self, user_id: int) -> List[Alert]:
 
         async with self._conn.execute(
             """
@@ -196,32 +233,25 @@ class Repo:
                 last_triggered_at,
                 created_at
             FROM alerts
-            WHERE active = 1
-            """
+            WHERE user_id = ?
+            AND active = 1
+            ORDER BY id DESC
+            """,
+            (int(user_id),),
         ) as cur:
 
             rows = await cur.fetchall()
 
         return [self._row_to_alert(r) for r in rows]
 
-    async def active_symbols(self) -> list[str]:
-
-        async with self._conn.execute(
-            """
-            SELECT DISTINCT symbol
-            FROM alerts
-            WHERE active = 1
-            """
-        ) as cur:
-
-            rows = await cur.fetchall()
-
-        return [str(r[0]) for r in rows]
+    # -----------------------------------------------------
+    # ENGINE QUERY (CRITICAL)
+    # -----------------------------------------------------
 
     async def list_active_alerts_for_symbols(
         self,
         symbols: Iterable[str],
-    ) -> list[Alert]:
+    ) -> List[Alert]:
 
         symbols = list(symbols)
 
@@ -252,6 +282,45 @@ class Repo:
 
         return [self._row_to_alert(r) for r in rows]
 
+    # -----------------------------------------------------
+    # SYMBOL SUBSCRIPTIONS
+    # -----------------------------------------------------
+
+    async def active_symbols(self) -> List[str]:
+
+        async with self._conn.execute(
+            """
+            SELECT DISTINCT symbol
+            FROM alerts
+            WHERE active = 1
+            """
+        ) as cur:
+
+            rows = await cur.fetchall()
+
+        return [str(r[0]) for r in rows]
+
+    # -----------------------------------------------------
+    # DELETE / DEACTIVATE ALERT
+    # -----------------------------------------------------
+
+    async def deactivate_alert(self, alert_id: int) -> None:
+
+        await self._conn.execute(
+            """
+            UPDATE alerts
+            SET active = 0
+            WHERE id = ?
+            """,
+            (int(alert_id),),
+        )
+
+        await self._conn.commit()
+
+    # -----------------------------------------------------
+    # ENGINE COOLDOWN
+    # -----------------------------------------------------
+
     async def update_last_triggered(self, alert_id: int) -> None:
 
         await self._conn.execute(
@@ -264,6 +333,10 @@ class Repo:
         )
 
         await self._conn.commit()
+
+    # -----------------------------------------------------
+    # INTERNAL
+    # -----------------------------------------------------
 
     def _row_to_alert(self, row: Any) -> Alert:
 
