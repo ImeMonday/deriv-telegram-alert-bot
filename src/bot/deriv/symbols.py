@@ -9,7 +9,6 @@ from bot.deriv.client import DerivWsClient
 LOG = logging.getLogger("bot.deriv.symbols")
 
 
-
 @dataclass(frozen=True)
 class SymbolItem:
     symbol: str
@@ -21,51 +20,36 @@ class SymbolItem:
 class SymbolCatalog:
     def __init__(self, client: DerivWsClient):
         self.client = client
-        LOG.debug("SymbolCatalog initialized")
 
     async def fetch_active_symbols(self) -> list[SymbolItem]:
-        """Fetch active symbols from Deriv API"""
-        try:
-            LOG.debug("Fetching active symbols from Deriv API")
 
-            resp = await self.client.request(
-                {
-                    "active_symbols": "brief",
-                    "product_type": "basic",
-                }
+        resp = await self.client.request(
+            {
+                "active_symbols": "brief",
+                "product_type": "basic",
+            }
+        )
+
+        items = resp.get("active_symbols") or []
+
+        out: list[SymbolItem] = []
+
+        for it in items:
+            out.append(
+                SymbolItem(
+                    symbol=str(it.get("symbol", "")).upper(),
+                    display_name=str(it.get("display_name", "")),
+                    market=it.get("market"),
+                    submarket=it.get("submarket"),
+                )
             )
 
-            items = resp.get("active_symbols") or []
+        LOG.info("Fetched %d symbols", len(out))
 
-            out: list[SymbolItem] = []
-
-            for it in items:
-                try:
-                    item = SymbolItem(
-                        symbol=str(it.get("symbol", "")).upper(),
-                        display_name=str(it.get("display_name", "")),
-                        market=it.get("market"),
-                        submarket=it.get("submarket"),
-                    )
-                    out.append(item)
-
-                except Exception as e:
-                    LOG.warning("Failed to parse symbol item: %s", e)
-
-            LOG.info("Fetched %d symbols", len(out))
-
-            return out
-
-        except Exception as e:
-            LOG.exception("Failed to fetch active symbols: %s", e)
-            raise
-
+        return out
 
 
 def display_name_for_symbol(symbol: str) -> str:
-    """
-    Return readable display name for a symbol
-    """
 
     symbol = (symbol or "").upper()
 
@@ -75,6 +59,18 @@ def display_name_for_symbol(symbol: str) -> str:
         "R_50": "Volatility 50 Index",
         "R_75": "Volatility 75 Index",
         "R_100": "Volatility 100 Index",
+        "R_10_1S": "Volatility 10 (1s)",
+        "R_25_1S": "Volatility 25 (1s)",
+        "R_50_1S": "Volatility 50 (1s)",
+        "R_75_1S": "Volatility 75 (1s)",
+        "R_100_1S": "Volatility 100 (1s)",
+        "JD10": "Jump 10 Index",
+        "JD25": "Jump 25 Index",
+        "JD50": "Jump 50 Index",
+        "JD75": "Jump 75 Index",
+        "JD100": "Jump 100 Index",
+        "BOOM1000": "Boom 1000",
+        "CRASH1000": "Crash 1000",
         "RDBULL": "Bull Market Index",
         "RDBEAR": "Bear Market Index",
     }
@@ -83,30 +79,27 @@ def display_name_for_symbol(symbol: str) -> str:
 
 
 def is_synthetic_symbol(symbol: str) -> bool:
-    """
-    Identify Deriv synthetic indices
-    """
 
     s = (symbol or "").upper()
 
-    keys = (
-        "R_",
-        "BOOM",
-        "CRASH",
-        "STEP",
-        "RANGE",
-        "BULL",
-        "BEAR",
+    return (
+        s.startswith("R_")
+        or s.startswith("JD")
+        or s.startswith("BOOM")
+        or s.startswith("CRASH")
+        or s.startswith("STEP")
+        or s.startswith("RANGE")
+        or s.startswith("BULL")
+        or s.startswith("BEAR")
     )
-
-    return any(k in s for k in keys)
 
 
 def forex_pairs(items: Iterable[SymbolItem]) -> list[SymbolItem]:
-    """Filter forex pairs"""
+
     out = []
 
     for s in items:
+
         m = (s.market or "").lower()
         sm = (s.submarket or "").lower()
 
@@ -117,47 +110,12 @@ def forex_pairs(items: Iterable[SymbolItem]) -> list[SymbolItem]:
 
 
 def volatility_indices(items: Iterable[SymbolItem]) -> list[SymbolItem]:
-    """Filter volatility / synthetic indices"""
-
-    keys = ("volatility", "boom", "crash", "step", "range")
 
     out = []
 
     for s in items:
-        name = s.display_name.lower()
 
-        if any(k in name for k in keys):
+        if is_synthetic_symbol(s.symbol):
             out.append(s)
 
-    return sorted(out, key=lambda x: x.display_name)
-
-
-
-def search(items: list[SymbolItem], q: str) -> list[SymbolItem]:
-    q = (q or "").strip().lower()
-
-    if not q:
-        return items
-
-    return [
-        s
-        for s in items
-        if q in s.display_name.lower()
-        or q in s.symbol.lower()
-    ]
-
-
-
-def paginate(items: list[SymbolItem], page: int, page_size: int = 12) -> tuple[list[SymbolItem], int]:
-
-    if page_size <= 0:
-        page_size = 12
-
-    total_pages = max(1, (len(items) + page_size - 1) // page_size)
-
-    page = max(0, min(page, total_pages - 1))
-
-    start = page * page_size
-    end = start + page_size
-
-    return items[start:end], total_pages
+    return sorted(out, key=lambda x: display_name_for_symbol(x.symbol))
