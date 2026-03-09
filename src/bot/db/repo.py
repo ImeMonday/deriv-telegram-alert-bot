@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 import aiosqlite
 
@@ -28,7 +28,6 @@ class Alert:
 class Repo:
     def __init__(self, conn: aiosqlite.Connection):
         self._conn = conn
-
 
     async def ensure_schema(self) -> None:
 
@@ -70,8 +69,8 @@ class Repo:
 
         await self._conn.commit()
 
-
     async def upsert_user(self, user_id: int) -> None:
+
         await self._conn.execute(
             """
             INSERT INTO users (user_id, plan, premium_status, created_at)
@@ -80,8 +79,8 @@ class Repo:
             """,
             (int(user_id), _utc_now_iso()),
         )
-        await self._conn.commit()
 
+        await self._conn.commit()
 
     async def get_user_plan(self, user_id: int) -> str:
 
@@ -94,7 +93,6 @@ class Repo:
             row = await cur.fetchone()
 
         return str(row[0]) if row else "free"
-
 
     async def set_user_plan(self, user_id: int, plan: str) -> None:
 
@@ -113,7 +111,6 @@ class Repo:
 
         await self._conn.commit()
 
-
     async def count_active_alerts(self, user_id: int) -> int:
 
         async with self._conn.execute(
@@ -127,7 +124,6 @@ class Repo:
             row = await cur.fetchone()
 
         return int(row[0]) if row else 0
-
 
     async def create_alert(
         self,
@@ -171,7 +167,6 @@ class Repo:
 
         return int(cur.lastrowid)
 
-
     async def deactivate_alert(self, alert_id: int) -> None:
 
         await self._conn.execute(
@@ -184,7 +179,6 @@ class Repo:
         )
 
         await self._conn.commit()
-
 
     async def active_alerts(self) -> list[Alert]:
 
@@ -210,12 +204,7 @@ class Repo:
 
         return [self._row_to_alert(r) for r in rows]
 
-
     async def active_symbols(self) -> list[str]:
-        """
-        Return all symbols currently used by active alerts.
-        Used by alert engine to subscribe to price streams.
-        """
 
         async with self._conn.execute(
             """
@@ -229,6 +218,39 @@ class Repo:
 
         return [str(r[0]) for r in rows]
 
+    async def list_active_alerts_for_symbols(
+        self,
+        symbols: Iterable[str],
+    ) -> list[Alert]:
+
+        symbols = list(symbols)
+
+        if not symbols:
+            return []
+
+        placeholders = ",".join("?" for _ in symbols)
+
+        query = f"""
+            SELECT
+                id,
+                user_id,
+                symbol,
+                price,
+                direction,
+                mode,
+                cooldown_seconds,
+                active,
+                last_triggered_at,
+                created_at
+            FROM alerts
+            WHERE active = 1
+            AND symbol IN ({placeholders})
+        """
+
+        async with self._conn.execute(query, tuple(symbols)) as cur:
+            rows = await cur.fetchall()
+
+        return [self._row_to_alert(r) for r in rows]
 
     async def update_last_triggered(self, alert_id: int) -> None:
 
@@ -243,8 +265,8 @@ class Repo:
 
         await self._conn.commit()
 
-
     def _row_to_alert(self, row: Any) -> Alert:
+
         return Alert(
             id=int(row[0]),
             user_id=int(row[1]),
