@@ -15,22 +15,25 @@ from bot.config import Settings
 from bot.db.base import Database, DbConfig
 from bot.db.repo import Repo
 from bot.deriv.symbols import display_name_for_symbol, is_synthetic_symbol
+from bot.handlers.common import nav_keyboard
+from bot.services.limits import can_create_alert
 from bot.services.state import SetAlertState
 from bot.services.symbol_cache import SymbolCache
-from bot.services.limits import can_create_alert
 
 LOG = logging.getLogger("bot.setalert")
 
-KEY_GROUP = "group"
-KEY_CATEGORY = "category"
-KEY_SYMBOL = "symbol"
-KEY_SYMBOL_NAME = "symbol_name"
-KEY_PRICE = "price"
-KEY_DIRECTION = "direction"
-KEY_MODE = "mode"
+KEY_GROUP = "sa_group"
+KEY_SYMBOL = "sa_symbol"
+KEY_SYMBOL_NAME = "sa_symbol_name"
+KEY_PRICE = "sa_price"
+KEY_DIRECTION = "sa_direction"
+KEY_MODE = "sa_mode"
+KEY_PAGE = "sa_page"
+KEY_QUERY = "sa_query"
+KEY_LIST_MSG_ID = "sa_list_msg_id"
 
 
-def group_keyboard():
+def _group_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Forex Pairs", callback_data="grp:forex")],
@@ -40,83 +43,171 @@ def group_keyboard():
     )
 
 
-def synthetic_category_keyboard():
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Volatility Indices", callback_data="cat:vol")],
-            [InlineKeyboardButton("Boom & Crash", callback_data="cat:boom")],
-            [InlineKeyboardButton("Jump Indices", callback_data="cat:jump")],
-            [InlineKeyboardButton("Bull & Bear", callback_data="cat:bullbear")],
-            [InlineKeyboardButton("Back", callback_data="nav:back")],
-        ]
-    )
-
-
-def filter_forex(symbols):
+def _forex_symbols(all_symbols):
     out = []
-    for s in symbols:
-        name = getattr(s, "display_name", "")
-        sym = getattr(s, "symbol", "")
-        if "/" in name or sym.startswith("FRX"):
+    for s in all_symbols:
+        symbol = str(getattr(s, "symbol", "") or "")
+        display_name = str(getattr(s, "display_name", "") or "")
+
+        if "/" in display_name or symbol.startswith("FRX"):
             out.append(s)
+
     return sorted(out, key=lambda x: x.display_name)
 
 
-def filter_synthetic(symbols, category):
+def _synthetic_symbols(all_symbols):
     out = []
-    for s in symbols:
-        sym = getattr(s, "symbol", "").upper()
 
-        if category == "vol" and sym.startswith("R_"):
-            out.append(s)
+    for s in all_symbols:
+        symbol = str(getattr(s, "symbol", "") or "").upper()
 
-        elif category == "boom" and (sym.startswith("BOOM") or sym.startswith("CRASH")):
-            out.append(s)
-
-        elif category == "jump" and sym.startswith("JD"):
-            out.append(s)
-
-        elif category == "bullbear" and (sym.startswith("RDBULL") or sym.startswith("RDBEAR")):
+        if is_synthetic_symbol(symbol):
             out.append(s)
 
     return sorted(out, key=lambda x: display_name_for_symbol(x.symbol))
 
 
-async def get_live_price(symbol: str):
-    """
-    Professional upgrade #1
-    Fetch live Deriv price preview
-    """
+def _search_symbols(items, query):
 
-    from bot.deriv.client import DerivWsClient
+    q = (query or "").strip().lower()
 
-    client = DerivWsClient()
+    if not q:
+        return items
 
-    try:
-        resp = await client.request(
-            {
-                "ticks": symbol,
-                "subscribe": 0,
-            }
+    out = []
+
+    for s in items:
+
+        symbol = str(getattr(s, "symbol", "") or "")
+        name = str(getattr(s, "display_name", "") or "")
+        full = display_name_for_symbol(symbol)
+
+        hay = f"{symbol} {name} {full}".lower()
+
+        if q in hay:
+            out.append(s)
+
+    return out
+
+
+def _paginate(items, page, page_size=12):
+
+    if not items:
+        return [], 1
+
+    total_pages = (len(items) + page_size - 1) // page_size
+
+    page = max(0, min(page, total_pages - 1))
+
+    start = page * page_size
+    end = start + page_size
+
+    return items[start:end], total_pages
+
+
+def _build_symbol_page(*, all_symbols, group, query, page):
+
+    if group == "forex":
+        items = _forex_symbols(all_symbols)
+        title = "Forex Pairs"
+    else:
+        items = _synthetic_symbols(all_symbols)
+        title = "Synthetic Indices"
+
+    filtered = _search_symbols(items, query)
+
+    page_items, total_pages = _paginate(filtered, page)
+
+    rows = []
+    row = []
+
+    for s in page_items:
+
+        symbol = str(getattr(s, "symbol", "") or "")
+
+        if group == "synthetic":
+            label = display_name_for_symbol(symbol)
+        else:
+            label = str(getattr(s, "display_name", "") or symbol)
+
+        row.append(
+            InlineKeyboardButton(label, callback_data=f"sym:{symbol}")
         )
 
-        return float(resp["tick"]["quote"])
+        if len(row) == 2:
+            rows.append(row)
+            row = []
 
-    except Exception:
-        return None
+    if row:
+        rows.append(row)
+
+    show_prev = page > 0
+    show_next = page < total_pages - 1
+
+    nav = nav_keyboard(
+        show_prev=show_prev,
+        show_next=show_next,
+        show_refresh=True,
+        show_back=True,
+    )
+
+    for r in nav.inline_keyboard:
+        rows.append(r)
+
+    text = (
+        f"{title}\n"
+        f"Search: {query if query else '(type to search)'}\n"
+        f"Page: {page+1}/{total_pages}\n\n"
+        "Pick a symbol:"
+    )
+
+    return text, InlineKeyboardMarkup(rows), page
 
 
 async def setalert_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    if not update.message or not update.effective_user:
+        return ConversationHandler.END
+
+    settings: Settings = context.application.bot_data["settings"]
+
+    db = Database(DbConfig(path=settings.db_path))
+    conn = await db.connect()
+
+    try:
+        repo = Repo(conn)
+
+        uid = update.effective_user.id
+
+        await repo.upsert_user(uid)
+
+        plan = await repo.get_user_plan(uid)
+
+        active = await repo.count_active_alerts(uid)
+
+    finally:
+        await conn.close()
+
+    chk = can_create_alert(plan, active)
+
+    if not chk.allowed:
+        await update.message.reply_text(chk.reason)
+        return ConversationHandler.END
+
+    context.user_data.clear()
+
+    context.user_data[KEY_PAGE] = 0
+    context.user_data[KEY_QUERY] = ""
+
     await update.message.reply_text(
         "Choose market group:",
-        reply_markup=group_keyboard(),
+        reply_markup=_group_keyboard(),
     )
 
     return int(SetAlertState.CHOOSE_GROUP)
 
 
-async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
@@ -124,101 +215,105 @@ async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
 
     if data == "grp:forex":
-
         context.user_data[KEY_GROUP] = "forex"
 
-        cache: SymbolCache = context.application.bot_data["symbol_cache"]
-        snap = await cache.get()
-
-        symbols = filter_forex(snap.all_symbols)
-
-        rows = []
-        for s in symbols[:20]:
-            rows.append(
-                [InlineKeyboardButton(s.display_name, callback_data=f"sym:{s.symbol}")]
-            )
-
-        await q.edit_message_text(
-            "Choose forex pair:",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-
-        return int(SetAlertState.CHOOSE_SYMBOL)
-
-    if data == "grp:synthetic":
-
+    elif data == "grp:synthetic":
         context.user_data[KEY_GROUP] = "synthetic"
 
-        await q.edit_message_text(
-            "Choose synthetic category:",
-            reply_markup=synthetic_category_keyboard(),
-        )
-
-        return int(SetAlertState.CHOOSE_SYMBOL)
-
-
-async def choose_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    q = update.callback_query
-    await q.answer()
-
-    cat = q.data.split(":")[1]
-
-    context.user_data[KEY_CATEGORY] = cat
+    else:
+        await q.edit_message_text("Invalid selection.")
+        return ConversationHandler.END
 
     cache: SymbolCache = context.application.bot_data["symbol_cache"]
+
     snap = await cache.get()
 
-    symbols = filter_synthetic(snap.all_symbols, cat)
-
-    rows = []
-
-    for s in symbols[:20]:
-
-        label = display_name_for_symbol(s.symbol)
-
-        rows.append(
-            [InlineKeyboardButton(label, callback_data=f"sym:{s.symbol}")]
-        )
-
-    await q.edit_message_text(
-        "Choose symbol:",
-        reply_markup=InlineKeyboardMarkup(rows),
+    text, markup, page = _build_symbol_page(
+        all_symbols=snap.all_symbols,
+        group=context.user_data[KEY_GROUP],
+        query="",
+        page=0,
     )
+
+    context.user_data[KEY_PAGE] = page
+
+    await q.edit_message_text(text, reply_markup=markup)
+
+    context.user_data[KEY_LIST_MSG_ID] = q.message.message_id
 
     return int(SetAlertState.CHOOSE_SYMBOL)
 
 
-async def symbol_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
 
-    symbol = q.data.split(":")[1]
+    data = q.data
 
-    context.user_data[KEY_SYMBOL] = symbol
-    context.user_data[KEY_SYMBOL_NAME] = display_name_for_symbol(symbol)
+    if data.startswith("sym:"):
 
-    live = await get_live_price(symbol)
+        symbol = data.split(":")[1]
 
-    price_info = ""
-    if live:
-        price_info = f"\nCurrent price: {live}"
+        context.user_data[KEY_SYMBOL] = symbol
+        context.user_data[KEY_SYMBOL_NAME] = display_name_for_symbol(symbol)
 
-    await q.edit_message_text(
-        f"Selected: {display_name_for_symbol(symbol)}{price_info}\n\n"
-        "Send price level."
+        await q.edit_message_text(
+            f"Selected: {display_name_for_symbol(symbol)}\n\n"
+            "Send the price level."
+        )
+
+        return int(SetAlertState.ENTER_PRICE)
+
+    if data == "nav:cancel":
+        await q.edit_message_text("Cancelled.")
+        return ConversationHandler.END
+
+    if data == "nav:back":
+
+        await q.edit_message_text(
+            "Choose market group:",
+            reply_markup=_group_keyboard(),
+        )
+
+        return int(SetAlertState.CHOOSE_GROUP)
+
+    cache: SymbolCache = context.application.bot_data["symbol_cache"]
+
+    snap = await cache.get()
+
+    page = context.user_data.get(KEY_PAGE, 0)
+
+    if data == "nav:next":
+        page += 1
+
+    if data == "nav:prev":
+        page = max(0, page - 1)
+
+    context.user_data[KEY_PAGE] = page
+
+    text, markup, page = _build_symbol_page(
+        all_symbols=snap.all_symbols,
+        group=context.user_data[KEY_GROUP],
+        query=context.user_data.get(KEY_QUERY, ""),
+        page=page,
     )
 
-    return int(SetAlertState.ENTER_PRICE)
+    context.user_data[KEY_PAGE] = page
+
+    await q.edit_message_text(text, reply_markup=markup)
+
+    return int(SetAlertState.CHOOSE_SYMBOL)
 
 
-async def price_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def price_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    raw = update.message.text.strip()
 
     try:
-        price = float(update.message.text)
+        price = float(raw)
     except Exception:
-        await update.message.reply_text("Send valid number.")
+        await update.message.reply_text("Send a valid number.")
         return int(SetAlertState.ENTER_PRICE)
 
     context.user_data[KEY_PRICE] = price
@@ -240,7 +335,7 @@ async def price_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return int(SetAlertState.CHOOSE_DIRECTION)
 
 
-async def direction_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def direction_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
@@ -266,7 +361,7 @@ async def direction_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return int(SetAlertState.CHOOSE_MODE)
 
 
-async def mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
@@ -279,41 +374,32 @@ async def mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = context.user_data[KEY_PRICE]
     direction = context.user_data[KEY_DIRECTION]
 
-    live = await get_live_price(symbol)
-
-    instant_warning = ""
-
-    if live:
-        if direction == "above" and live >= price:
-            instant_warning = "\n⚠ Price already above level"
-
-        if direction == "below" and live <= price:
-            instant_warning = "\n⚠ Price already below level"
-
     kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Confirm Alert", callback_data="cnf:save")]]
+        [[InlineKeyboardButton("Confirm", callback_data="cnf:save")]]
     )
 
     await q.edit_message_text(
-        f"Confirm Alert\n\n"
+        f"Confirm alert\n\n"
         f"Symbol: {display_name_for_symbol(symbol)}\n"
-        f"Current Price: {live}\n"
-        f"Target Price: {price}\n"
+        f"Price: {price}\n"
         f"Direction: {direction}\n"
-        f"Mode: {mode}"
-        f"{instant_warning}",
+        f"Mode: {mode}",
         reply_markup=kb,
     )
 
     return int(SetAlertState.CONFIRM)
 
 
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
 
+    if q.data != "cnf:save":
+        return ConversationHandler.END
+
     user_id = update.effective_user.id
+
     symbol = context.user_data[KEY_SYMBOL]
     price = context.user_data[KEY_PRICE]
     direction = context.user_data[KEY_DIRECTION]
@@ -328,24 +414,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         repo = Repo(conn)
 
-        await repo.upsert_user(user_id)
-
-        plan = await repo.get_user_plan(user_id)
-        active = await repo.count_active_alerts(user_id)
-
-        chk = can_create_alert(plan, active)
-
-        if not chk.allowed:
-            await q.edit_message_text(chk.reason)
-            return ConversationHandler.END
-
         alert_id = await repo.create_alert(
             user_id=user_id,
             symbol=symbol,
             price=price,
             direction=direction,
             mode=mode,
-            cooldown_seconds=30,
         )
 
     finally:
@@ -353,7 +427,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.edit_message_text(
         f"Alert saved #{alert_id}\n\n"
-        f"{display_name_for_symbol(symbol)}\n"
+        f"Symbol: {display_name_for_symbol(symbol)}\n"
         f"Price: {price}\n"
         f"Direction: {direction}\n"
         f"Mode: {mode}"
@@ -362,30 +436,48 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-def build_setalert_conversation():
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        await update.message.reply_text("Cancelled.")
+    return ConversationHandler.END
+
+
+def build_setalert_conversation() -> ConversationHandler:
 
     return ConversationHandler(
         entry_points=[CommandHandler("setalert", setalert_start)],
+
         states={
             int(SetAlertState.CHOOSE_GROUP): [
-                CallbackQueryHandler(choose_group, pattern="^grp:")
+                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:(forex|synthetic)$"),
+                CallbackQueryHandler(cancel_cmd, pattern=r"^nav:cancel$")
             ],
+
             int(SetAlertState.CHOOSE_SYMBOL): [
-                CallbackQueryHandler(choose_category, pattern="^cat:"),
-                CallbackQueryHandler(symbol_selected, pattern="^sym:"),
+                CallbackQueryHandler(symbol_cb, pattern=r"^(sym:|nav:)"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, price_msg),
             ],
+
             int(SetAlertState.ENTER_PRICE): [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, price_entered)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, price_msg)
             ],
+
             int(SetAlertState.CHOOSE_DIRECTION): [
-                CallbackQueryHandler(direction_selected, pattern="^dir:")
+                CallbackQueryHandler(direction_cb, pattern=r"^dir:")
             ],
+
             int(SetAlertState.CHOOSE_MODE): [
-                CallbackQueryHandler(mode_selected, pattern="^mode:")
+                CallbackQueryHandler(mode_cb, pattern=r"^mode:")
             ],
+
             int(SetAlertState.CONFIRM): [
-                CallbackQueryHandler(confirm, pattern="^cnf:")
+                CallbackQueryHandler(confirm_cb, pattern=r"^cnf:")
             ],
         },
+
+        fallbacks=[
+            CommandHandler("cancel", cancel_cmd)
+        ],
+
         allow_reentry=True,
     )
