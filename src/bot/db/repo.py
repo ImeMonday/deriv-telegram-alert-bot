@@ -214,7 +214,7 @@ class Repo:
         return int(cur.lastrowid)
 
     # -----------------------------------------------------
-    # LIST USER ALERTS
+    # USER ALERT LIST
     # -----------------------------------------------------
 
     async def list_user_alerts(self, user_id: int) -> List[Alert]:
@@ -245,7 +245,7 @@ class Repo:
         return [self._row_to_alert(r) for r in rows]
 
     # -----------------------------------------------------
-    # ENGINE QUERY (CRITICAL)
+    # ENGINE QUERY
     # -----------------------------------------------------
 
     async def list_active_alerts_for_symbols(
@@ -301,7 +301,7 @@ class Repo:
         return [str(r[0]) for r in rows]
 
     # -----------------------------------------------------
-    # DELETE / DEACTIVATE ALERT
+    # DELETE ALERT
     # -----------------------------------------------------
 
     async def deactivate_alert(self, alert_id: int) -> None:
@@ -318,10 +318,10 @@ class Repo:
         await self._conn.commit()
 
     # -----------------------------------------------------
-    # ENGINE COOLDOWN
+    # ALERT TRIGGER UPDATE
     # -----------------------------------------------------
 
-    async def update_last_triggered(self, alert_id: int) -> None:
+    async def update_triggered(self, alert_id: int) -> None:
 
         await self._conn.execute(
             """
