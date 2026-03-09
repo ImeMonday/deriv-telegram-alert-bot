@@ -437,25 +437,33 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("Cancelled.")
+    elif update.message:
         await update.message.reply_text("Cancelled.")
+
     return ConversationHandler.END
 
 
 def build_setalert_conversation() -> ConversationHandler:
 
     return ConversationHandler(
-        entry_points=[CommandHandler("setalert", setalert_start)],
+
+        entry_points=[
+            CommandHandler("setalert", setalert_start)
+        ],
 
         states={
+
             int(SetAlertState.CHOOSE_GROUP): [
                 CallbackQueryHandler(choose_group_cb, pattern=r"^grp:(forex|synthetic)$"),
                 CallbackQueryHandler(cancel_cmd, pattern=r"^nav:cancel$")
             ],
 
             int(SetAlertState.CHOOSE_SYMBOL): [
-                CallbackQueryHandler(symbol_cb, pattern=r"^(sym:|nav:)"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, price_msg),
+                CallbackQueryHandler(symbol_cb, pattern=r"^(sym:|nav:)")
             ],
 
             int(SetAlertState.ENTER_PRICE): [
