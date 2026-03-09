@@ -28,6 +28,7 @@ async def on_error(update, context) -> None:
 
 
 async def log_any_callback(update, context) -> None:
+
     q = getattr(update, "callback_query", None)
     if not q:
         return
@@ -47,6 +48,7 @@ async def cancel_cmd(update: Update, context) -> None:
 
 
 def build_app(settings: Settings) -> Application:
+
     app = Application.builder().token(settings.telegram_bot_token).build()
 
     app.bot_data["settings"] = settings
@@ -60,11 +62,14 @@ def build_app(settings: Settings) -> Application:
     engine = AlertEngine(app)
     app.bot_data["alert_engine"] = engine
 
+
     async def _on_start(app: Application):
+
         LOG.info("Bot starting...")
 
         db = Database(DbConfig(path=settings.db_path))
         conn = await db.connect()
+
         try:
             repo = Repo(conn)
             await repo.ensure_schema()
@@ -82,7 +87,9 @@ def build_app(settings: Settings) -> Application:
 
         LOG.info("Bot started.")
 
+
     async def _on_stop(app: Application):
+
         LOG.info("Bot stopping...")
 
         try:
@@ -97,9 +104,15 @@ def build_app(settings: Settings) -> Application:
 
         LOG.info("Bot stopped.")
 
+
     app.post_init = _on_start
     app.post_shutdown = _on_stop
+
     app.add_error_handler(on_error)
+
+    # ------------------------
+    # COMMAND HANDLERS
+    # ------------------------
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("myalerts", myalerts_cmd))
@@ -110,11 +123,43 @@ def build_app(settings: Settings) -> Application:
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
+
+    # ------------------------
+    # UPGRADE HANDLERS
+    # ------------------------
+
     for handler in build_upgrade_handlers():
         app.add_handler(handler)
 
-    app.add_handler(CallbackQueryHandler(log_any_callback, pattern=r".*", block=False), group=0)
-    app.add_handler(build_setalert_conversation(), group=1)
-    app.add_handler(CallbackQueryHandler(deletealert_cb, pattern=r"^del:"), group=2)
+
+    # ------------------------
+    # DEBUG CALLBACK LOGGER
+    # ------------------------
+
+    app.add_handler(
+        CallbackQueryHandler(log_any_callback, pattern=r".*", block=False),
+        group=0,
+    )
+
+
+    # ------------------------
+    # SET ALERT CONVERSATION
+    # ------------------------
+
+    app.add_handler(
+        build_setalert_conversation(),
+        group=1,
+    )
+
+
+    # ------------------------
+    # DELETE ALERT BUTTON
+    # ------------------------
+
+    app.add_handler(
+        CallbackQueryHandler(deletealert_cb, pattern=r"^del:"),
+        group=2,
+    )
+
 
     return app
