@@ -56,6 +56,7 @@ def _forex_symbols(all_symbols):
 
 
 def _synthetic_symbols(all_symbols):
+
     out = []
 
     for s in all_symbols:
@@ -66,7 +67,7 @@ def _synthetic_symbols(all_symbols):
         if "synthetic" in m or "synthetic" in sm:
             out.append(s)
 
-    return sorted(out, key=lambda x: x.display_name)
+    return sorted(out, key=lambda x: getattr(x, "display_name", ""))
 
 def _search_symbols(items, query):
 
