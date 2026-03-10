@@ -24,26 +24,47 @@ class SymbolCatalog:
 
     async def fetch_active_symbols(self) -> List[SymbolItem]:
 
-        resp_basic = await self.client.request(
-            {
-                "active_symbols": "full",
-                "product_type": "basic",
-            }
-        )
+        requests = [
+            {"active_symbols": "full"},
+            {"active_symbols": "full", "product_type": "basic"},
+            {"active_symbols": "full", "product_type": "advanced"},
+        ]
 
-        resp_advanced = await self.client.request(
-            {
-                "active_symbols": "full",
-                "product_type": "advanced",
-            }
-        )
+        seen = {}
+        out: List[SymbolItem] = []
 
-        items = (resp_basic.get("active_symbols") or []) + (
-            resp_advanced.get("active_symbols") or []
-        )
+        for req in requests:
 
-        # Deriv sometimes returns empty results temporarily
-        if not items:
+            try:
+                resp = await self.client.request(req)
+                items = resp.get("active_symbols") or []
+            except Exception as e:
+                LOG.warning("active_symbols request failed: %s", e)
+                continue
+
+            for it in items:
+
+                symbol = str(it.get("symbol", "")).upper()
+
+                if not symbol:
+                    continue
+
+                if symbol in seen:
+                    continue
+
+                seen[symbol] = True
+
+                out.append(
+                    SymbolItem(
+                        symbol=symbol,
+                        display_name=str(it.get("display_name", "")),
+                        market=it.get("market"),
+                        submarket=it.get("submarket"),
+                    )
+                )
+
+        if not out:
+
             LOG.warning("Deriv returned empty active_symbols")
 
             if self._cache:
@@ -55,19 +76,6 @@ class SymbolCatalog:
             LOG.error("No cached symbols available")
             return []
 
-        out: List[SymbolItem] = []
-
-        for it in items:
-            out.append(
-                SymbolItem(
-                    symbol=str(it.get("symbol", "")).upper(),
-                    display_name=str(it.get("display_name", "")),
-                    market=it.get("market"),
-                    submarket=it.get("submarket"),
-                )
-            )
-
-        # update cache
         self._cache = out
 
         LOG.info("Fetched %d symbols", len(out))
@@ -79,7 +87,6 @@ def display_name_for_symbol(symbol: str) -> str:
     symbol = (symbol or "").upper()
 
     mapping = {
-        # Volatility
         "R_10": "Volatility 10 Index",
         "R_25": "Volatility 25 Index",
         "R_50": "Volatility 50 Index",
@@ -92,24 +99,22 @@ def display_name_for_symbol(symbol: str) -> str:
         "R_75_1S": "Volatility 75 (1s)",
         "R_100_1S": "Volatility 100 (1s)",
 
-        # Jump
         "JD10": "Jump 10 Index",
         "JD25": "Jump 25 Index",
         "JD50": "Jump 50 Index",
         "JD75": "Jump 75 Index",
         "JD100": "Jump 100 Index",
 
-        # Boom / Crash
+        "BOOM500": "Boom 500",
         "BOOM1000": "Boom 1000",
+        "CRASH500": "Crash 500",
         "CRASH1000": "Crash 1000",
 
-        # Step
         "STEPINDEX": "Step Index",
 
-        # Range Break
         "RANGE100": "Range Break 100",
+        "RANGE200": "Range Break 200",
 
-        # Bulls / Bears
         "RDBULL": "Bull Market Index",
         "RDBEAR": "Bear Market Index",
     }
@@ -139,9 +144,11 @@ def is_synthetic_symbol(symbol: str) -> bool:
 
 
 def forex_pairs(items: Iterable[SymbolItem]) -> List[SymbolItem]:
+
     out: List[SymbolItem] = []
 
     for s in items:
+
         m = (s.market or "").lower()
         sm = (s.submarket or "").lower()
 
@@ -152,6 +159,7 @@ def forex_pairs(items: Iterable[SymbolItem]) -> List[SymbolItem]:
 
 
 def volatility_indices(items: Iterable[SymbolItem]) -> List[SymbolItem]:
+
     out: List[SymbolItem] = []
 
     for s in items:
