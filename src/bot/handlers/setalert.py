@@ -33,15 +33,26 @@ KEY_QUERY = "sa_query"
 KEY_LIST_MSG_ID = "sa_list_msg_id"
 
 
+# --------------------------------------------------
+# MARKET GROUP MENU
+# --------------------------------------------------
+
 def _group_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Forex Pairs", callback_data="grp:forex")],
+            [InlineKeyboardButton("Forex", callback_data="grp:forex")],
+            [InlineKeyboardButton("Crypto", callback_data="grp:crypto")],
+            [InlineKeyboardButton("Commodities", callback_data="grp:commodities")],
+            [InlineKeyboardButton("Indices", callback_data="grp:indices")],
             [InlineKeyboardButton("Synthetic Indices", callback_data="grp:synthetic")],
             [InlineKeyboardButton("Cancel", callback_data="nav:cancel")],
         ]
     )
 
+
+# --------------------------------------------------
+# SYMBOL FILTERS
+# --------------------------------------------------
 
 def _forex_symbols(all_symbols):
     out = []
@@ -55,19 +66,58 @@ def _forex_symbols(all_symbols):
     return sorted(out, key=lambda x: x.display_name)
 
 
-def _synthetic_symbols(all_symbols):
-
+def _crypto_symbols(all_symbols):
     out = []
 
     for s in all_symbols:
-
         m = (s.market or "").lower()
         sm = (s.submarket or "").lower()
 
-        if "synthetic" in m or "synthetic" in sm:
+        if "crypto" in m or "crypto" in sm:
             out.append(s)
 
-    return sorted(out, key=lambda x: getattr(x, "display_name", ""))
+    return sorted(out, key=lambda x: x.display_name)
+
+
+def _commodities_symbols(all_symbols):
+    out = []
+
+    for s in all_symbols:
+        m = (s.market or "").lower()
+
+        if "commodity" in m:
+            out.append(s)
+
+    return sorted(out, key=lambda x: x.display_name)
+
+
+def _indices_symbols(all_symbols):
+    out = []
+
+    for s in all_symbols:
+        m = (s.market or "").lower()
+
+        if "index" in m:
+            out.append(s)
+
+    return sorted(out, key=lambda x: x.display_name)
+
+
+def _synthetic_symbols(all_symbols):
+    out = []
+
+    for s in all_symbols:
+        symbol = str(getattr(s, "symbol", "") or "")
+
+        if is_synthetic_symbol(symbol):
+            out.append(s)
+
+    return sorted(out, key=lambda x: display_name_for_symbol(x.symbol))
+
+
+# --------------------------------------------------
+# SEARCH
+# --------------------------------------------------
 
 def _search_symbols(items, query):
 
@@ -82,15 +132,19 @@ def _search_symbols(items, query):
 
         symbol = str(getattr(s, "symbol", "") or "")
         name = str(getattr(s, "display_name", "") or "")
-        full = display_name_for_symbol(symbol)
+        alias = display_name_for_symbol(symbol)
 
-        hay = f"{symbol} {name} {full}".lower()
+        hay = f"{symbol} {name} {alias}".lower()
 
         if q in hay:
             out.append(s)
 
     return out
 
+
+# --------------------------------------------------
+# PAGINATION
+# --------------------------------------------------
 
 def _paginate(items, page, page_size=12):
 
@@ -107,11 +161,28 @@ def _paginate(items, page, page_size=12):
     return items[start:end], total_pages
 
 
+# --------------------------------------------------
+# PAGE BUILDER
+# --------------------------------------------------
+
 def _build_symbol_page(*, all_symbols, group, query, page):
 
     if group == "forex":
         items = _forex_symbols(all_symbols)
-        title = "Forex Pairs"
+        title = "Forex"
+
+    elif group == "crypto":
+        items = _crypto_symbols(all_symbols)
+        title = "Crypto"
+
+    elif group == "commodities":
+        items = _commodities_symbols(all_symbols)
+        title = "Commodities"
+
+    elif group == "indices":
+        items = _indices_symbols(all_symbols)
+        title = "Indices"
+
     else:
         items = _synthetic_symbols(all_symbols)
         title = "Synthetic Indices"
@@ -127,10 +198,7 @@ def _build_symbol_page(*, all_symbols, group, query, page):
 
         symbol = str(getattr(s, "symbol", "") or "")
 
-        if group == "synthetic":
-            label = display_name_for_symbol(symbol)
-        else:
-            label = str(getattr(s, "display_name", "") or display_name_for_symbol(symbol))
+        label = display_name_for_symbol(symbol)
 
         row.append(
             InlineKeyboardButton(label, callback_data=f"sym:{symbol}")
@@ -166,6 +234,10 @@ def _build_symbol_page(*, all_symbols, group, query, page):
     return text, InlineKeyboardMarkup(rows), page
 
 
+# --------------------------------------------------
+# START COMMAND
+# --------------------------------------------------
+
 async def setalert_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message or not update.effective_user:
@@ -177,6 +249,7 @@ async def setalert_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = await db.connect()
 
     try:
+
         repo = Repo(conn)
 
         uid = update.effective_user.id
@@ -209,6 +282,10 @@ async def setalert_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return int(SetAlertState.CHOOSE_GROUP)
 
 
+# --------------------------------------------------
+# GROUP SELECT
+# --------------------------------------------------
+
 async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
@@ -216,15 +293,10 @@ async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = q.data
 
-    if data == "grp:forex":
-        context.user_data[KEY_GROUP] = "forex"
-
-    elif data == "grp:synthetic":
-        context.user_data[KEY_GROUP] = "synthetic"
-
-    else:
-        await q.edit_message_text("Invalid selection.")
+    if not data.startswith("grp:"):
         return ConversationHandler.END
+
+    context.user_data[KEY_GROUP] = data.split(":")[1]
 
     cache: SymbolCache = context.application.bot_data["symbol_cache"]
 
@@ -241,10 +313,12 @@ async def choose_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.edit_message_text(text, reply_markup=markup)
 
-    context.user_data[KEY_LIST_MSG_ID] = q.message.message_id
-
     return int(SetAlertState.CHOOSE_SYMBOL)
 
+
+# --------------------------------------------------
+# SYMBOL SELECT
+# --------------------------------------------------
 
 async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -308,6 +382,10 @@ async def symbol_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return int(SetAlertState.CHOOSE_SYMBOL)
 
 
+# --------------------------------------------------
+# PRICE INPUT
+# --------------------------------------------------
+
 async def price_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw = update.message.text.strip()
@@ -337,6 +415,10 @@ async def price_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return int(SetAlertState.CHOOSE_DIRECTION)
 
 
+# --------------------------------------------------
+# DIRECTION
+# --------------------------------------------------
+
 async def direction_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
@@ -362,6 +444,10 @@ async def direction_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return int(SetAlertState.CHOOSE_MODE)
 
+
+# --------------------------------------------------
+# MODE
+# --------------------------------------------------
 
 async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -391,6 +477,10 @@ async def mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return int(SetAlertState.CONFIRM)
 
+
+# --------------------------------------------------
+# SAVE ALERT
+# --------------------------------------------------
 
 async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -438,16 +528,25 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# --------------------------------------------------
+# CANCEL
+# --------------------------------------------------
+
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Cancelled.")
+
     elif update.message:
         await update.message.reply_text("Cancelled.")
 
     return ConversationHandler.END
 
+
+# --------------------------------------------------
+# CONVERSATION BUILDER
+# --------------------------------------------------
 
 def build_setalert_conversation() -> ConversationHandler:
 
@@ -460,7 +559,7 @@ def build_setalert_conversation() -> ConversationHandler:
         states={
 
             int(SetAlertState.CHOOSE_GROUP): [
-                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:(forex|synthetic)$"),
+                CallbackQueryHandler(choose_group_cb, pattern=r"^grp:"),
                 CallbackQueryHandler(cancel_cmd, pattern=r"^nav:cancel$")
             ],
 
