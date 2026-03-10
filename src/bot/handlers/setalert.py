@@ -59,13 +59,13 @@ def _synthetic_symbols(all_symbols):
     out = []
 
     for s in all_symbols:
-        symbol = str(getattr(s, "symbol", "") or "").upper()
+        market = str(getattr(s, "market", "") or "").lower()
 
-        if is_synthetic_symbol(symbol):
+        
+        if market == "synthetic_index":
             out.append(s)
 
-    return sorted(out, key=lambda x: display_name_for_symbol(x.symbol))
-
+    return sorted(out, key=lambda x: getattr(x, "display_name", ""))
 
 def _search_symbols(items, query):
 
