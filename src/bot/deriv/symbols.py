@@ -49,9 +49,6 @@ class SymbolCatalog:
         return out
 
 
-# ----------------------------
-# Display name mapping
-# ----------------------------
 
 def display_name_for_symbol(symbol: str) -> str:
 
@@ -98,17 +95,16 @@ def display_name_for_symbol(symbol: str) -> str:
     return mapping.get(symbol, symbol)
 
 
-# ----------------------------
-# Synthetic detection
-# ----------------------------
 
 def is_synthetic_symbol(symbol: str) -> bool:
 
     s = (symbol or "").upper()
 
     synthetic_prefixes = (
-        "R_",       # volatility
-        "JD",       # jump
+        "R_",        
+        "1HZ",       
+        "JD",        
+        "JUMP",     
         "BOOM",
         "CRASH",
         "STEP",
@@ -121,10 +117,6 @@ def is_synthetic_symbol(symbol: str) -> bool:
 
     return s.startswith(synthetic_prefixes)
 
-
-# ----------------------------
-# Forex filter
-# ----------------------------
 
 def forex_pairs(items: Iterable[SymbolItem]) -> list[SymbolItem]:
 
@@ -141,9 +133,7 @@ def forex_pairs(items: Iterable[SymbolItem]) -> list[SymbolItem]:
     return sorted(out, key=lambda x: x.display_name)
 
 
-# ----------------------------
-# Synthetic filter
-# ----------------------------
+
 
 def volatility_indices(items: Iterable[SymbolItem]) -> list[SymbolItem]:
 
