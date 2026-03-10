@@ -25,9 +25,9 @@ class SymbolCatalog:
 
         resp = await self.client.request(
     {
-        "active_symbols": "brief"
+        "active_symbols": "full"
     }
-)
+        )
 
         items = resp.get("active_symbols") or []
 
