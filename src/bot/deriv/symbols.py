@@ -20,6 +20,7 @@ class SymbolItem:
 class SymbolCatalog:
     def __init__(self, client: DerivWsClient):
         self.client = client
+        self._cache: List[SymbolItem] = []
 
     async def fetch_active_symbols(self) -> List[SymbolItem]:
 
@@ -41,6 +42,19 @@ class SymbolCatalog:
             resp_advanced.get("active_symbols") or []
         )
 
+        # Deriv sometimes returns empty results temporarily
+        if not items:
+            LOG.warning("Deriv returned empty active_symbols")
+
+            if self._cache:
+                LOG.warning(
+                    "Using cached symbols instead (%d symbols)", len(self._cache)
+                )
+                return self._cache
+
+            LOG.error("No cached symbols available")
+            return []
+
         out: List[SymbolItem] = []
 
         for it in items:
@@ -52,6 +66,9 @@ class SymbolCatalog:
                     submarket=it.get("submarket"),
                 )
             )
+
+        # update cache
+        self._cache = out
 
         LOG.info("Fetched %d symbols", len(out))
 
