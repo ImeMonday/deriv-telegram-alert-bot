@@ -24,11 +24,10 @@ class SymbolCatalog:
     async def fetch_active_symbols(self) -> list[SymbolItem]:
 
         resp = await self.client.request(
-            {
-                "active_symbols": "brief",
-                "product_type": "basic",
-            }
-        )
+    {
+        "active_symbols": "brief"
+    }
+)
 
         items = resp.get("active_symbols") or []
 
