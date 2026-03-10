@@ -128,7 +128,7 @@ def _build_symbol_page(*, all_symbols, group, query, page):
         if group == "synthetic":
             label = display_name_for_symbol(symbol)
         else:
-            label = str(getattr(s, "display_name", "") or symbol)
+            label = str(getattr(s, "display_name", "") or display_name_for_symbol(symbol))
 
         row.append(
             InlineKeyboardButton(label, callback_data=f"sym:{symbol}")
