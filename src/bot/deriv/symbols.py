@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, List
 
 from bot.deriv.client import DerivWsClient
 
@@ -21,17 +21,17 @@ class SymbolCatalog:
     def __init__(self, client: DerivWsClient):
         self.client = client
 
-    async def fetch_active_symbols(self) -> list[SymbolItem]:
-
+    async def fetch_active_symbols(self) -> List[SymbolItem]:
         resp = await self.client.request(
-    {
-        "active_symbols": "full"
-    }
+            {
+                "active_symbols": "full",
+                "product_type": "all",
+            }
         )
 
         items = resp.get("active_symbols") or []
 
-        out: list[SymbolItem] = []
+        out: List[SymbolItem] = []
 
         for it in items:
             out.append(
@@ -48,13 +48,10 @@ class SymbolCatalog:
         return out
 
 
-
 def display_name_for_symbol(symbol: str) -> str:
-
     symbol = (symbol or "").upper()
 
     mapping = {
-
         # Volatility
         "R_10": "Volatility 10 Index",
         "R_25": "Volatility 25 Index",
@@ -88,22 +85,19 @@ def display_name_for_symbol(symbol: str) -> str:
         # Bulls / Bears
         "RDBULL": "Bull Market Index",
         "RDBEAR": "Bear Market Index",
-
     }
 
     return mapping.get(symbol, symbol)
 
 
-
 def is_synthetic_symbol(symbol: str) -> bool:
-
     s = (symbol or "").upper()
 
     synthetic_prefixes = (
-        "R_",        
-        "1HZ",       
-        "JD",        
-        "JUMP",     
+        "R_",
+        "1HZ",
+        "JD",
+        "JUMP",
         "BOOM",
         "CRASH",
         "STEP",
@@ -117,12 +111,10 @@ def is_synthetic_symbol(symbol: str) -> bool:
     return s.startswith(synthetic_prefixes)
 
 
-def forex_pairs(items: Iterable[SymbolItem]) -> list[SymbolItem]:
-
-    out = []
+def forex_pairs(items: Iterable[SymbolItem]) -> List[SymbolItem]:
+    out: List[SymbolItem] = []
 
     for s in items:
-
         m = (s.market or "").lower()
         sm = (s.submarket or "").lower()
 
@@ -132,14 +124,10 @@ def forex_pairs(items: Iterable[SymbolItem]) -> list[SymbolItem]:
     return sorted(out, key=lambda x: x.display_name)
 
 
-
-
-def volatility_indices(items: Iterable[SymbolItem]) -> list[SymbolItem]:
-
-    out = []
+def volatility_indices(items: Iterable[SymbolItem]) -> List[SymbolItem]:
+    out: List[SymbolItem] = []
 
     for s in items:
-
         if is_synthetic_symbol(s.symbol):
             out.append(s)
 
