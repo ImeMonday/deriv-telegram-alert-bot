@@ -6,7 +6,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+
+# force load env from correct location (important for systemd services)
+load_dotenv("/opt/telegram-bot/.env")
 
 
 @dataclass(frozen=True)
@@ -39,11 +41,16 @@ def load_settings() -> Settings:
 
     log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
-    admin_telegram_user_ids = [
-        int(x.strip())
-        for x in os.getenv("ADMIN_TELEGRAM_USER_IDS", "").split(",")
-        if x.strip()
-    ]
+    # parse admin IDs from env
+    admin_ids_raw = os.getenv("ADMIN_TELEGRAM_USER_IDS", "").strip()
+
+    admin_telegram_user_ids: list[int] = []
+
+    if admin_ids_raw:
+        for x in admin_ids_raw.split(","):
+            x = x.strip()
+            if x:
+                admin_telegram_user_ids.append(int(x))
 
     paystack_secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
     paystack_public_key = os.getenv("PAYSTACK_PUBLIC_KEY", "").strip()
