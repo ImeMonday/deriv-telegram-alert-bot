@@ -149,6 +149,65 @@ class Repo:
         return row[0] if row else None
 
     # -----------------------------------------------------
+    # ADMIN STATS
+    # -----------------------------------------------------
+
+    async def count_users(self) -> int:
+
+        async with self._conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM users
+            """
+        ) as cur:
+            row = await cur.fetchone()
+
+        return int(row[0]) if row else 0
+
+    async def count_alerts_total(self) -> int:
+
+        async with self._conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM alerts
+            """
+        ) as cur:
+            row = await cur.fetchone()
+
+        return int(row[0]) if row else 0
+
+    async def count_alerts_active_total(self) -> int:
+
+        async with self._conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM alerts
+            WHERE active = 1
+            """
+        ) as cur:
+            row = await cur.fetchone()
+
+        return int(row[0]) if row else 0
+
+    async def top_symbols(self, limit: int = 8) -> List[tuple[str, int]]:
+
+        async with self._conn.execute(
+            """
+            SELECT symbol, COUNT(*) as n
+            FROM alerts
+            WHERE active = 1
+            GROUP BY symbol
+            ORDER BY n DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cur:
+
+            rows = await cur.fetchall()
+
+        return [(str(r[0]), int(r[1])) for r in rows]
+
+    # -----------------------------------------------------
     # ALERT COUNTS
     # -----------------------------------------------------
 
