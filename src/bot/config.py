@@ -16,7 +16,7 @@ class Settings:
     deriv_app_id: int
     db_path: Path
     log_level: str
-    admin_telegram_user_id: int
+    admin_telegram_user_ids: list[int]
 
     paystack_secret_key: str
     paystack_public_key: str
@@ -25,13 +25,25 @@ class Settings:
 
 
 def load_settings() -> Settings:
+
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    deriv_ws_url = os.getenv("DERIV_WS_URL", "wss://ws.derivws.com/websockets/v3").strip()
+
+    deriv_ws_url = os.getenv(
+        "DERIV_WS_URL",
+        "wss://ws.derivws.com/websockets/v3",
+    ).strip()
+
     deriv_app_id = int(os.getenv("DERIV_APP_ID", "0"))
+
     db_path = Path(os.getenv("DB_PATH", "data/bot.db").strip())
+
     log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
-    admin_telegram_user_id = int(os.getenv("ADMIN_TELEGRAM_USER_ID", "0"))
+    admin_telegram_user_ids = [
+        int(x.strip())
+        for x in os.getenv("ADMIN_TELEGRAM_USER_IDS", "").split(",")
+        if x.strip()
+    ]
 
     paystack_secret_key = os.getenv("PAYSTACK_SECRET_KEY", "").strip()
     paystack_public_key = os.getenv("PAYSTACK_PUBLIC_KEY", "").strip()
@@ -44,7 +56,7 @@ def load_settings() -> Settings:
         deriv_app_id=deriv_app_id,
         db_path=db_path,
         log_level=log_level,
-        admin_telegram_user_id=admin_telegram_user_id,
+        admin_telegram_user_ids=admin_telegram_user_ids,
         paystack_secret_key=paystack_secret_key,
         paystack_public_key=paystack_public_key,
         payment_base_url=payment_base_url,

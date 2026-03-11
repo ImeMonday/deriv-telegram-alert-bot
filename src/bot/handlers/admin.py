@@ -9,28 +9,30 @@ from bot.db.repo import Repo
 
 
 def _is_admin(update: Update, settings: Settings) -> bool:
-    if settings.admin_telegram_user_id <= 0:
-        return False
 
     user = update.effective_user
     if not user:
         return False
 
-    return int(user.id) == int(settings.admin_telegram_user_id)
+    return int(user.id) in settings.admin_telegram_user_ids
 
 
 async def adminstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
     settings: Settings = context.application.bot_data["settings"]
 
     if not _is_admin(update, settings):
+
         if update.message:
             await update.message.reply_text("Unauthorized.")
+
         return
 
     db = Database(DbConfig(path=settings.db_path))
     conn = await db.connect()
 
     try:
+
         repo = Repo(conn)
 
         users = await repo.count_users()
@@ -44,6 +46,7 @@ async def adminstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     top_lines = "\n".join([f"{sym}: {n}" for sym, n in top]) if top else "None"
 
     if update.message:
+
         await update.message.reply_text(
             "Admin stats\n"
             f"Users: {users}\n"
@@ -55,6 +58,7 @@ async def adminstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def setplan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
     settings: Settings = context.application.bot_data["settings"]
 
     if not _is_admin(update, settings):
@@ -90,18 +94,22 @@ async def setplan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def premium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
     if not context.args:
         await update.message.reply_text("Usage: /premium <user_id>")
         return
 
     context.args = [context.args[0], "premium"]
+
     await setplan_cmd(update, context)
 
 
 async def free_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
     if not context.args:
         await update.message.reply_text("Usage: /free <user_id>")
         return
 
     context.args = [context.args[0], "free"]
+
     await setplan_cmd(update, context)
