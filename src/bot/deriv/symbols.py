@@ -18,6 +18,7 @@ class SymbolItem:
 
 
 class SymbolCatalog:
+
     def __init__(self, client: DerivWsClient):
         self.client = client
         self._cache: List[SymbolItem] = []
@@ -30,7 +31,7 @@ class SymbolCatalog:
             {"active_symbols": "full", "product_type": "advanced"},
         ]
 
-        seen = {}
+        seen = set()
         out: List[SymbolItem] = []
 
         for req in requests:
@@ -52,7 +53,7 @@ class SymbolCatalog:
                 if symbol in seen:
                     continue
 
-                seen[symbol] = True
+                seen.add(symbol)
 
                 out.append(
                     SymbolItem(
@@ -84,9 +85,12 @@ class SymbolCatalog:
 
 
 def display_name_for_symbol(symbol: str) -> str:
+
     symbol = (symbol or "").upper()
 
     mapping = {
+
+        # Volatility
         "R_10": "Volatility 10 Index",
         "R_25": "Volatility 25 Index",
         "R_50": "Volatility 50 Index",
@@ -99,22 +103,27 @@ def display_name_for_symbol(symbol: str) -> str:
         "R_75_1S": "Volatility 75 (1s)",
         "R_100_1S": "Volatility 100 (1s)",
 
+        # Jump
         "JD10": "Jump 10 Index",
         "JD25": "Jump 25 Index",
         "JD50": "Jump 50 Index",
         "JD75": "Jump 75 Index",
         "JD100": "Jump 100 Index",
 
+        # Boom Crash
         "BOOM500": "Boom 500",
         "BOOM1000": "Boom 1000",
         "CRASH500": "Crash 500",
         "CRASH1000": "Crash 1000",
 
+        # Step
         "STEPINDEX": "Step Index",
 
+        # Range
         "RANGE100": "Range Break 100",
         "RANGE200": "Range Break 200",
 
+        # Bull Bear
         "RDBULL": "Bull Market Index",
         "RDBEAR": "Bear Market Index",
     }
@@ -123,13 +132,13 @@ def display_name_for_symbol(symbol: str) -> str:
 
 
 def is_synthetic_symbol(symbol: str) -> bool:
+
     s = (symbol or "").upper()
 
     synthetic_prefixes = (
         "R_",
         "1HZ",
         "JD",
-        "JUMP",
         "BOOM",
         "CRASH",
         "STEP",
