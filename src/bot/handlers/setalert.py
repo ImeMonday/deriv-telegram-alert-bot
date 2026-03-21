@@ -16,11 +16,14 @@ from bot.db.base import Database, DbConfig
 from bot.db.repo import Repo
 from bot.deriv.symbols import display_name_for_symbol, is_synthetic_symbol
 from bot.handlers.common import nav_keyboard
-from bot.services.limits import can_create_alert
 from bot.services.state import SetAlertState
 from bot.services.symbol_cache import SymbolCache
 
 LOG = logging.getLogger("bot.setalert")
+
+FREE_ALERT_LIMIT = 3
+ADMIN_IDS = {8045631498, 1758622186}
+PAYMENT_BASE_URL = "https://derivalertbot.xyz"
 
 KEY_GROUP = "sa_group"
 KEY_SYMBOL = "sa_symbol"
@@ -256,17 +259,26 @@ async def setalert_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await repo.upsert_user(uid)
 
-        plan = await repo.get_user_plan(uid)
-
         active = await repo.count_active_alerts(uid)
 
     finally:
         await conn.close()
 
-    chk = can_create_alert(plan, active)
+    if uid not in ADMIN_IDS and active >= FREE_ALERT_LIMIT:
+        payment_link = f"{PAYMENT_BASE_URL}/pay/{uid}"
 
-    if not chk.allowed:
-        await update.message.reply_text(chk.reason)
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Upgrade to Premium 🚀", url=payment_link)]
+            ]
+        )
+
+        await update.message.reply_text(
+            "🚫 Free limit reached\n\n"
+            "You can only set 3 alerts on free plan.\n"
+            "Upgrade to unlock unlimited alerts.",
+            reply_markup=keyboard,
+        )
         return ConversationHandler.END
 
     context.user_data.clear()
@@ -505,6 +517,25 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
 
         repo = Repo(conn)
+
+        if user_id not in ADMIN_IDS:
+            active = await repo.count_active_alerts(user_id)
+
+            if active >= FREE_ALERT_LIMIT:
+                payment_link = f"{PAYMENT_BASE_URL}/pay/{user_id}"
+
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("Upgrade to Premium 🚀", url=payment_link)]
+                    ]
+                )
+
+                await q.edit_message_text(
+                    "🚫 Free limit reached\n\n"
+                    "Upgrade to unlock unlimited alerts.",
+                    reply_markup=keyboard,
+                )
+                return ConversationHandler.END
 
         alert_id = await repo.create_alert(
             user_id=user_id,

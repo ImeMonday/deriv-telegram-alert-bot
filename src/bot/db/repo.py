@@ -304,6 +304,33 @@ class Repo:
         return [self._row_to_alert(r) for r in rows]
 
     # -----------------------------------------------------
+    # ACTIVE ALERTS
+    # -----------------------------------------------------
+
+    async def list_active_alerts(self) -> List[Alert]:
+
+        async with self._conn.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                symbol,
+                price,
+                direction,
+                mode,
+                cooldown_seconds,
+                active,
+                last_triggered_at,
+                created_at
+            FROM alerts
+            WHERE active = 1
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return [self._row_to_alert(r) for r in rows]
+
+    # -----------------------------------------------------
     # ENGINE QUERY
     # -----------------------------------------------------
 
