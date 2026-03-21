@@ -53,8 +53,13 @@ class AlertEngine:
 
         self._running = False
 
-        self._refresh_every_sec = 10
+        # 🔥 FIX: faster refresh
+        self._refresh_every_sec = 2
+
         self._last_symbols: set[str] = set()
+
+        # 🔥 NEW: in-memory cache
+        self._alerts_cache: dict[str, list] = {}
 
     async def start(self) -> None:
 
@@ -101,9 +106,7 @@ class AlertEngine:
         while self._running:
 
             try:
-
                 await asyncio.sleep(self._refresh_every_sec)
-
                 await self._refresh_subscriptions()
 
             except asyncio.CancelledError:
@@ -117,26 +120,34 @@ class AlertEngine:
         assert self._repo is not None
 
         symbols = await self._repo.active_symbols()
-
         new_set = set(symbols)
 
-        if new_set == self._last_symbols:
-            return
+        if new_set != self._last_symbols:
+            self._last_symbols = new_set
 
-        self._last_symbols = new_set
+            await self._stream.unsubscribe_all()
 
-        await self._stream.unsubscribe_all()
+            for s in symbols:
+                await self._stream.subscribe(s)
 
-        for s in symbols:
-            await self._stream.subscribe(s)
+        # 🔥 FIX: refresh alerts cache
+        alerts = await self._repo.list_active_alerts()
+
+        cache: dict[str, list] = {}
+        for alert in alerts:
+            cache.setdefault(alert.symbol, []).append(alert)
+
+        self._alerts_cache = cache
 
     async def _on_tick(self, symbol: str, price: float):
 
         assert self._repo is not None
 
         try:
+            alerts = self._alerts_cache.get(symbol, [])
 
-            alerts = await self._repo.list_active_alerts_for_symbols([symbol])
+            # 🔍 Debug log
+            self._log.info(f"{symbol} price={price} alerts={len(alerts)}")
 
             for alert in alerts:
 
@@ -155,12 +166,10 @@ class AlertEngine:
                     mode=alert.mode,
                 )
 
-                # ---------- FIX ----------
                 if alert.mode == "once":
                     await self._repo.deactivate_alert(alert.id)
                 else:
                     await self._repo.update_triggered(alert.id)
-                # -------------------------
 
         except Exception as e:
             self._log.warning("Tick handling failed (%s): %s", symbol, e)
@@ -181,7 +190,6 @@ class AlertEngine:
             return True
 
         last = _parse_sqlite_ts(str(alert.last_triggered_at))
-
         if not last:
             return True
 
