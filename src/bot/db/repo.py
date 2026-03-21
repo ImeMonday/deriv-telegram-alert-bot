@@ -421,6 +421,190 @@ class Repo:
         await self._conn.commit()
 
     # -----------------------------------------------------
+    # PAYSTACK EVENTS (CRITICAL)
+    # -----------------------------------------------------
+
+    async def mark_event_processed(self, event_key: str) -> bool:
+        try:
+            await self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS processed_paystack_events (
+                    event_key TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            await self._conn.execute(
+                "INSERT INTO processed_paystack_events (event_key) VALUES (?)",
+                (event_key,),
+            )
+
+            await self._conn.commit()
+            return True
+
+        except Exception:
+            return False
+
+    # -----------------------------------------------------
+    # PAYSTACK USER LOOKUPS
+    # -----------------------------------------------------
+
+    async def find_user_id_by_customer_code(self, customer_code: str) -> int | None:
+
+        async with self._conn.execute(
+            """
+            SELECT user_id
+            FROM users
+            WHERE paystack_customer_code = ?
+            """,
+            (customer_code,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        return int(row[0]) if row else None
+
+    async def find_user_id_by_subscription_code(self, subscription_code: str) -> int | None:
+
+        async with self._conn.execute(
+            """
+            SELECT user_id
+            FROM users
+            WHERE paystack_subscription_code = ?
+            """,
+            (subscription_code,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        return int(row[0]) if row else None
+
+    # -----------------------------------------------------
+    # PAYSTACK SUBSCRIPTION HANDLING
+    # -----------------------------------------------------
+
+    async def activate_subscription(
+        self,
+        *,
+        user_id: int,
+        customer_code: str | None,
+        subscription_code: str | None,
+        email_token: str | None,
+        renews_at: str | None,
+    ) -> None:
+
+        await self._conn.execute(
+            """
+            UPDATE users
+            SET
+                plan = 'premium',
+                premium_status = 'active',
+                paystack_customer_code = COALESCE(?, paystack_customer_code),
+                paystack_subscription_code = COALESCE(?, paystack_subscription_code),
+                paystack_email_token = COALESCE(?, paystack_email_token),
+                premium_renews_at = COALESCE(?, premium_renews_at)
+            WHERE user_id = ?
+            """,
+            (
+                customer_code,
+                subscription_code,
+                email_token,
+                renews_at,
+                int(user_id),
+            ),
+        )
+
+        await self._conn.commit()
+
+    async def mark_subscription_failed(
+        self,
+        *,
+        user_id: int | None,
+        subscription_code: str | None,
+    ) -> None:
+
+        if user_id is not None:
+            await self._conn.execute(
+                """
+                UPDATE users
+                SET premium_status = 'past_due'
+                WHERE user_id = ?
+                """,
+                (int(user_id),),
+            )
+
+        elif subscription_code:
+            await self._conn.execute(
+                """
+                UPDATE users
+                SET premium_status = 'past_due'
+                WHERE paystack_subscription_code = ?
+                """,
+                (subscription_code,),
+            )
+
+        await self._conn.commit()
+
+    async def mark_subscription_cancelling(
+        self,
+        *,
+        user_id: int | None,
+        subscription_code: str | None,
+    ) -> None:
+
+        if user_id is not None:
+            await self._conn.execute(
+                """
+                UPDATE users
+                SET premium_status = 'cancelling'
+                WHERE user_id = ?
+                """,
+                (int(user_id),),
+            )
+
+        elif subscription_code:
+            await self._conn.execute(
+                """
+                UPDATE users
+                SET premium_status = 'cancelling'
+                WHERE paystack_subscription_code = ?
+                """,
+                (subscription_code,),
+            )
+
+        await self._conn.commit()
+
+    async def disable_subscription(
+        self,
+        *,
+        user_id: int | None,
+        subscription_code: str | None,
+    ) -> None:
+
+        if user_id is not None:
+            await self._conn.execute(
+                """
+                UPDATE users
+                SET plan = 'free',
+                    premium_status = 'inactive'
+                WHERE user_id = ?
+                """,
+                (int(user_id),),
+            )
+
+        elif subscription_code:
+            await self._conn.execute(
+                """
+                UPDATE users
+                SET plan = 'free',
+                    premium_status = 'inactive'
+                WHERE paystack_subscription_code = ?
+                """,
+                (subscription_code,),
+            )
+
+        await self._conn.commit()
+
+    # -----------------------------------------------------
     # INTERNAL
     # -----------------------------------------------------
 
