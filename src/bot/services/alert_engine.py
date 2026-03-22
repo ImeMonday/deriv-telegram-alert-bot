@@ -53,12 +53,9 @@ class AlertEngine:
 
         self._running = False
 
-        # 🔥 FIX: faster refresh
         self._refresh_every_sec = 2
 
         self._last_symbols: set[str] = set()
-
-        # 🔥 NEW: in-memory cache
         self._alerts_cache: dict[str, list] = {}
 
     async def start(self) -> None:
@@ -130,7 +127,6 @@ class AlertEngine:
             for s in symbols:
                 await self._stream.subscribe(s)
 
-        # 🔥 FIX: refresh alerts cache
         alerts = await self._repo.list_active_alerts()
 
         cache: dict[str, list] = {}
@@ -138,6 +134,7 @@ class AlertEngine:
             cache.setdefault(alert.symbol, []).append(alert)
 
         self._alerts_cache = cache
+        self._log.info("Loaded %d alerts into cache", sum(len(v) for v in cache.values()))
 
     async def _on_tick(self, symbol: str, price: float):
 
@@ -146,7 +143,6 @@ class AlertEngine:
         try:
             alerts = self._alerts_cache.get(symbol, [])
 
-            # 🔍 Debug log
             self._log.info(f"{symbol} price={price} alerts={len(alerts)}")
 
             for alert in alerts:
@@ -207,22 +203,32 @@ class AlertEngine:
         target: float,
         mode: str,
     ):
-
         name = display_name_for_symbol(symbol)
 
+        # 🔥 Calculate % distance from target
+        if target > 0:
+            pct = abs((price - target) / target) * 100
+            pct_str = f"{pct:.2f}%"
+        else:
+            pct_str = "N/A"
+
+        direction_emoji = "📈" if direction == "above" else "📉"
+
         text = (
-            "🎯 Alert Triggered\n\n"
-            f"Symbol: {name}\n"
-            f"Current Price: {price}\n"
-            f"Target: {target}\n"
-            f"Direction: {direction.title()}\n"
+            f"🎯 <b>Alert Triggered</b>\n\n"
+            f"Symbol: <b>{name}</b>\n"
+            f"Current Price: <b>{price}</b>\n"
+            f"Target: <b>{target}</b>\n"
+            f"Direction: {direction_emoji} {direction.title()}\n"
+            f"Distance from target: <b>{pct_str}</b>\n"
             f"Mode: {mode.title()}"
         )
 
         try:
             await self._app.bot.send_message(
                 chat_id=user_id,
-                text=text
+                text=text,
+                parse_mode="HTML",
             )
 
         except Exception as e:

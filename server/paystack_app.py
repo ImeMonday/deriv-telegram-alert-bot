@@ -21,6 +21,7 @@ PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
 PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY", "")
 PAYSTACK_PLAN_CODE = os.getenv("PAYSTACK_PLAN_CODE", "")
 PAYMENT_BASE_URL = os.getenv("PAYMENT_BASE_URL", "https://derivalertbot.xyz")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 DB_PATH = os.getenv("DB_PATH", "data/bot.db")
 DB_ABS_PATH = DB_PATH if DB_PATH.startswith("/") else f"/opt/telegram-bot/{DB_PATH}"
@@ -31,6 +32,17 @@ async def _get_repo() -> tuple[aiosqlite.Connection, Repo]:
     repo = Repo(conn)
     await repo.ensure_schema()
     return conn, repo
+
+
+async def _send_telegram_message(user_id: int, text: str) -> None:
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            await client.post(url, json={"chat_id": user_id, "text": text, "parse_mode": "HTML"})
+        except Exception as e:
+            print(f"Failed to send welcome message to {user_id}: {e}")
 
 
 def _event_key(event: dict) -> str:
@@ -243,24 +255,59 @@ async def paystack_webhook(request: Request):
                     email_token=email_token,
                     renews_at=renews_at,
                 )
+                # 🔥 Welcome message
+                await _send_telegram_message(
+                    user_id,
+                    "🎉 <b>Welcome to Premium!</b>\n\n"
+                    "Your payment was successful. You now have access to:\n"
+                    "• Up to 100 active alerts\n"
+                    "• Real-time price notifications\n"
+                    "• Priority access\n\n"
+                    "Use /setalert to set your first premium alert.\n"
+                    "Use /status to check your plan anytime."
+                )
 
         elif event_name in {"invoice.payment_failed"}:
             await repo.mark_subscription_failed(
                 user_id=user_id,
                 subscription_code=subscription_code,
             )
+            if user_id is not None:
+                await _send_telegram_message(
+                    user_id,
+                    "⚠️ <b>Payment Failed</b>\n\n"
+                    "We couldn't process your renewal payment.\n"
+                    "Please update your payment details to keep premium access.\n\n"
+                    "Use /upgrade to try again."
+                )
 
         elif event_name in {"subscription.not_renew", "subscription.disable"}:
             await repo.mark_subscription_cancelling(
                 user_id=user_id,
                 subscription_code=subscription_code,
             )
+            if user_id is not None:
+                await _send_telegram_message(
+                    user_id,
+                    "ℹ️ <b>Subscription Cancelling</b>\n\n"
+                    "Your premium subscription will not renew.\n"
+                    "You will keep access until the end of your current period.\n\n"
+                    "Use /upgrade to resubscribe anytime."
+                )
 
         elif event_name in {"subscription.expiring_cards", "subscription.disable_complete"}:
             await repo.disable_subscription(
                 user_id=user_id,
                 subscription_code=subscription_code,
             )
+            if user_id is not None:
+                await _send_telegram_message(
+                    user_id,
+                    "❌ <b>Premium Ended</b>\n\n"
+                    "Your premium subscription has ended.\n"
+                    "You are now on the free plan (3 alerts max).\n\n"
+                    "Use /upgrade to resubscribe and unlock unlimited alerts."
+                )
 
         print(
             {
