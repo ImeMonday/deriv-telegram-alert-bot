@@ -11,12 +11,16 @@ from bot.db.base import Database, DbConfig
 from bot.db.repo import Repo
 from bot.deriv.client import DerivWsClient
 from bot.handlers.admin import adminstats_cmd, free_cmd, premium_cmd, setplan_cmd
+from bot.handlers.broadcast import build_broadcast_conversation
 from bot.handlers.deletealert import deletealert_cb, deletealert_cmd
+from bot.handlers.help import build_help_handlers
 from bot.handlers.setalert import build_setalert_conversation
 from bot.handlers.start import start_cmd
+from bot.handlers.status import build_status_handlers
 from bot.handlers.upgrade import build_upgrade_handlers
 from bot.handlers.viewalerts import myalerts_cmd
 from bot.services.alert_engine import AlertEngine
+from bot.services.expiry_notifier import ExpiryNotifier
 from bot.services.symbol_cache import SymbolCache
 
 LOG = logging.getLogger("bot.app")
@@ -62,6 +66,9 @@ def build_app(settings: Settings) -> Application:
     engine = AlertEngine(app)
     app.bot_data["alert_engine"] = engine
 
+    expiry_notifier = ExpiryNotifier(app)
+    app.bot_data["expiry_notifier"] = expiry_notifier
+
 
     async def _on_start(app: Application):
 
@@ -84,6 +91,7 @@ def build_app(settings: Settings) -> Application:
             LOG.exception("Symbol cache warmup failed")
 
         await app.bot_data["alert_engine"].start()
+        await app.bot_data["expiry_notifier"].start()
 
         LOG.info("Bot started.")
 
@@ -91,6 +99,11 @@ def build_app(settings: Settings) -> Application:
     async def _on_stop(app: Application):
 
         LOG.info("Bot stopping...")
+
+        try:
+            await app.bot_data["expiry_notifier"].stop()
+        except Exception:
+            LOG.exception("Error stopping expiry notifier")
 
         try:
             await app.bot_data["alert_engine"].stop()
@@ -123,6 +136,11 @@ def build_app(settings: Settings) -> Application:
     app.add_handler(CommandHandler("free", free_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
+    for handler in build_status_handlers():
+        app.add_handler(handler)
+
+    for handler in build_help_handlers():
+        app.add_handler(handler)
 
     # ------------------------
     # UPGRADE HANDLERS
@@ -130,7 +148,6 @@ def build_app(settings: Settings) -> Application:
 
     for handler in build_upgrade_handlers():
         app.add_handler(handler)
-
 
     # ------------------------
     # DEBUG CALLBACK LOGGER
@@ -141,7 +158,6 @@ def build_app(settings: Settings) -> Application:
         group=0,
     )
 
-
     # ------------------------
     # SET ALERT CONVERSATION
     # ------------------------
@@ -151,6 +167,14 @@ def build_app(settings: Settings) -> Application:
         group=1,
     )
 
+    # ------------------------
+    # BROADCAST CONVERSATION
+    # ------------------------
+
+    app.add_handler(
+        build_broadcast_conversation(),
+        group=1,
+    )
 
     # ------------------------
     # DELETE ALERT BUTTON
@@ -160,6 +184,5 @@ def build_app(settings: Settings) -> Application:
         CallbackQueryHandler(deletealert_cb, pattern=r"^del:"),
         group=2,
     )
-
 
     return app

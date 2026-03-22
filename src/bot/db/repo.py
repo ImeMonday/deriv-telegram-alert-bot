@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, List
 
 import aiosqlite
@@ -67,6 +67,15 @@ class Repo:
                 last_triggered_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+            """
+        )
+
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_paystack_events (
+                event_key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -147,6 +156,34 @@ class Repo:
             row = await cur.fetchone()
 
         return row[0] if row else None
+
+    async def get_all_user_ids(self) -> List[int]:
+
+        async with self._conn.execute(
+            "SELECT user_id FROM users"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return [int(r[0]) for r in rows]
+
+    async def get_expiring_premium_users(self, days: int = 3) -> List[tuple[int, str]]:
+
+        cutoff = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+        async with self._conn.execute(
+            """
+            SELECT user_id, premium_renews_at
+            FROM users
+            WHERE plan = 'premium'
+            AND premium_status = 'active'
+            AND premium_renews_at IS NOT NULL
+            AND premium_renews_at <= ?
+            """,
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return [(int(r[0]), str(r[1])) for r in rows]
 
     # -----------------------------------------------------
     # ADMIN STATS
@@ -427,19 +464,9 @@ class Repo:
     async def mark_event_processed(self, event_key: str) -> bool:
         try:
             await self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS processed_paystack_events (
-                    event_key TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-
-            await self._conn.execute(
                 "INSERT INTO processed_paystack_events (event_key) VALUES (?)",
                 (event_key,),
             )
-
             await self._conn.commit()
             return True
 
