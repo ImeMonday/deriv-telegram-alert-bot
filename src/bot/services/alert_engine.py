@@ -53,10 +53,14 @@ class AlertEngine:
 
         self._running = False
 
-        self._refresh_every_sec = 2
+        # 🔥 less aggressive refresh
+        self._refresh_every_sec = 10
 
         self._last_symbols: set[str] = set()
         self._alerts_cache: dict[str, list] = {}
+
+        # 🔥 NEW: store last price per symbol (for crossing logic)
+        self._last_price: dict[str, float] = {}
 
     async def start(self) -> None:
 
@@ -134,6 +138,7 @@ class AlertEngine:
             cache.setdefault(alert.symbol, []).append(alert)
 
         self._alerts_cache = cache
+
         self._log.info("Loaded %d alerts into cache", sum(len(v) for v in cache.values()))
 
     async def _on_tick(self, symbol: str, price: float):
@@ -141,17 +146,36 @@ class AlertEngine:
         assert self._repo is not None
 
         try:
+            prev_price = self._last_price.get(symbol)
+
+            # 🔥 restart-safe: first tick just initializes
+            if prev_price is None:
+                self._last_price[symbol] = price
+                return
+
+            self._last_price[symbol] = price
+
             alerts = self._alerts_cache.get(symbol, [])
 
             self._log.info(f"{symbol} price={price} alerts={len(alerts)}")
 
-            for alert in alerts:
+            for alert in list(alerts):  # copy to avoid mutation issues
 
-                if not self._should_trigger(alert, price):
+                self._log.info(
+                    f"CHECK {symbol} | prev={prev_price} price={price} "
+                    f"target={alert.price} dir={alert.direction}"
+                )
+
+                if not self._should_trigger(alert, price, prev_price):
                     continue
 
                 if not self._cooldown_ok(alert):
                     continue
+
+                self._log.info(
+                    f"TRIGGERED {symbol} | user={alert.user_id} "
+                    f"price={price} target={alert.price}"
+                )
 
                 await self._notify(
                     alert.user_id,
@@ -162,6 +186,11 @@ class AlertEngine:
                     mode=alert.mode,
                 )
 
+                # 🔥 prevent duplicate trigger in same cycle
+                if symbol in self._alerts_cache:
+                    if alert in self._alerts_cache[symbol]:
+                        self._alerts_cache[symbol].remove(alert)
+
                 if alert.mode == "once":
                     await self._repo.deactivate_alert(alert.id)
                 else:
@@ -170,13 +199,21 @@ class AlertEngine:
         except Exception as e:
             self._log.warning("Tick handling failed (%s): %s", symbol, e)
 
-    def _should_trigger(self, alert, price: float) -> bool:
+    def _should_trigger(self, alert, price: float, prev_price: float | None) -> bool:
+
+        if prev_price is None:
+            return False
+
+        target = float(alert.price)
+
+        if target <= 0:
+            return False
 
         if alert.direction == "above":
-            return price >= alert.price
+            return prev_price < target and price >= target
 
         if alert.direction == "below":
-            return price <= alert.price
+            return prev_price > target and price <= target
 
         return False
 
@@ -205,7 +242,6 @@ class AlertEngine:
     ):
         name = display_name_for_symbol(symbol)
 
-        # 🔥 Calculate % distance from target
         if target > 0:
             pct = abs((price - target) / target) * 100
             pct_str = f"{pct:.2f}%"
